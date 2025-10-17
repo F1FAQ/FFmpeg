@@ -86,7 +86,7 @@ static int tl_create(TabList *l)
 
         for (int i = 0; i < l->nb_tabs; i++) {
             Tab *t = l->tabs + i;
-            *t->tab = l->zero ? av_mallocz(t->size) : av_malloc(t->size);
+            *t->tab = av_mallocz(t->size);
             if (!*t->tab)
                 return AVERROR(ENOMEM);
         }
