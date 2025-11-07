@@ -51,12 +51,8 @@ gbrpf32le           070140993c538b996890b983c0a010be
 gray                d96e0f1c73d3f0b9506d691b5cd36c73
 gray10be            d061419a367cd373f24a2d6c1ee7d053
 gray10le            d3a497d617afc0571e70498e2fb83c06
-gray10msbbe         cdc524ab9bd8aa4638e9f857987ff530
-gray10msble         120becb549110b6b3342f45ce22a70a4
 gray12be            c39a152c43cef4d09582de0242b81533
 gray12le            3481771752aff19c7c795fa1ff62b7af
-gray12msbbe         5ca1f415f9022e1301803bde7e1b5845
-gray12msble         1f9158e7ec1ca9af30ea0d43138fa385
 gray14be            226c4dfe178445f5990472158f917ae9
 gray14le            de4b3f0166df4136b2a03e3d9b8f8831
 gray16be            507d141b00748b23457ae5c61c4ca548
@@ -122,12 +118,8 @@ yuv411p             e4a040e0e786c4dae07d9d3f90a54905
 yuv422p             16ce67249c6ce7ef57a433646ad6dfc1
 yuv422p10be         62ae323dcc41aabf8ff6ecc53b119ce8
 yuv422p10le         60b20ad8c01ad7ea774ce1d74d8932ba
-yuv422p10msbbe      7b79dbcb696575ab55717e2a5d2eb223
-yuv422p10msble      b182fe96adaa08f5b1fa55a0efea76fe
 yuv422p12be         7bcb3e28323dbf566512b5b8a1d33380
 yuv422p12le         5877624df10122dd51c173f814bd5414
-yuv422p12msbbe      478e1a8ef5703e1a1eca438a9387446e
-yuv422p12msble      3000948ea9fe3975f21108b3effef999
 yuv422p14be         8bd7bfb0b35d68000ba57af66958ef2d
 yuv422p14le         471c7528e3da240d0a40f33548cbfbab
 yuv422p16be         8c193a8b6064e2379b2fb211cd2e6e37
