@@ -134,6 +134,16 @@ static int av1_parser_parse(AVCodecParserContext *ctx,
             break;
         }
         ctx->picture_structure = AV_PICTURE_STRUCTURE_FRAME;
+
+        /* Extract SAR from render_size if different from frame_size */
+        if (av1->render_width && av1->render_height &&
+            ctx->width && ctx->height) {
+            av_reduce(&avctx->sample_aspect_ratio.num,
+                      &avctx->sample_aspect_ratio.den,
+                      (int64_t)ctx->height * av1->render_width,
+                      (int64_t)ctx->width  * av1->render_height,
+                      INT_MAX);
+        }
     }
 
     switch (av1->bit_depth) {
