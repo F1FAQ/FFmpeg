@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <stdint.h>
 
+#include "libavutil/buffer.h"
 #include "libavutil/error.h"
 #include "libavutil/intmath.h"
 #include "libavutil/macros.h"
@@ -31,12 +32,13 @@
 #include "av1.h"
 #include "get_bits.h"
 #include "leb.h"
+#include "libavutil/intreadwrite.h"
 
 // OBU header fields + max leb128 length
 #define MAX_OBU_HEADER_SIZE (2 + 8)
 
 typedef struct AV1OBU {
-    /** Size of payload */
+    /** Size of escaped payload */
     int size;
     const uint8_t *data;
 
@@ -46,7 +48,11 @@ typedef struct AV1OBU {
      */
     int size_bits;
 
-    /** Size of entire OBU, including header */
+    /** Size of entire OBU, escaped, including header */
+    int escaped_size;
+    const uint8_t *escaped_data;
+
+    /** Size of entire OBU, unescaped, including header */
     int raw_size;
     const uint8_t *raw_data;
 
@@ -56,9 +62,15 @@ typedef struct AV1OBU {
     int spatial_id;
 } AV1OBU;
 
+typedef struct AV1Buffer {
+    AVBufferRef *ref;
+    int buf_size;
+} AV1Buffer;
+
 /** An input packet split into OBUs */
 typedef struct AV1Packet {
     AV1OBU *obus;
+    AV1Buffer buf;
     int nb_obus;
     int obus_allocated;
     unsigned obus_allocated_size;
@@ -71,11 +83,13 @@ typedef struct AV1Packet {
  *       the pointers in the AV1OBU structure will be valid as long
  *       as the input buffer also is.
  */
-int ff_av1_extract_obu(AV1OBU *obu, const uint8_t *buf, int length,
-                       void *logctx);
+int ff_av1_extract_obu(AV1OBU *obu, AV1Buffer *buf, const uint8_t *data,
+                       int length, int ts, void *logctx);
 
 /**
  * Split an input packet into OBUs.
+ * Supports both Section 5 (length delimited) and MPEG-TS start code formats.
+ * Automatically detects the format and handles it accordingly.
  *
  * @note This function does not copy or store any bitstream data. All
  *       the pointers in the AV1Packet structure will be valid as
@@ -83,6 +97,15 @@ int ff_av1_extract_obu(AV1OBU *obu, const uint8_t *buf, int length,
  */
 int ff_av1_packet_split(AV1Packet *pkt, const uint8_t *buf, int length,
                         void *logctx);
+
+/**
+ * Check if AV1 data is in MPEG-TS start code format (0x000001 prefix).
+ */
+static inline int av1_is_startcode_format(const uint8_t *buf, int size)
+{
+    return (size >= 3 && AV_RB24(buf) == 0x000001) ||
+           (size >= 4 && AV_RB32(buf) == 0x00000001);
+}
 
 /**
  * Free all the allocated memory in the packet.
@@ -127,10 +150,8 @@ static inline int parse_obu_header(const uint8_t *buf, int buf_size,
 
     size = *obu_size + *start_pos;
 
-    if (size > buf_size)
-        return AVERROR_INVALIDDATA;
-
     return size;
+
 }
 
 static inline int get_obu_bit_length(const uint8_t *buf, int size, int type)
