@@ -146,7 +146,6 @@
 #define STREAM_TYPE_VIDEO_HEVC      0x24
 #define STREAM_TYPE_VIDEO_JPEGXS    0x32
 #define STREAM_TYPE_VIDEO_VVC       0x33
-#define STREAM_TYPE_VIDEO_AV1       0x06  /* Per AOM AV1-MPEG2-TS draft spec */
 #define STREAM_TYPE_VIDEO_CAVS      0x42
 #define STREAM_TYPE_VIDEO_AVS2      0xd2
 #define STREAM_TYPE_VIDEO_AVS3      0xd4
