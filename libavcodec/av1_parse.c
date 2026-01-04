@@ -71,7 +71,7 @@ int ff_av1_extract_obu(AV1OBU *obu, AV1Buffer *buf, const uint8_t *src,
         obu->escaped_data =
         obu->raw_data     = src;
         obu->escaped_size =
-        obu->raw_size     = si;
+        obu->raw_size     = FFMIN(si, length);
 
         goto end;
     } else if (i > length)
@@ -162,10 +162,8 @@ int ff_av1_packet_split(AV1Packet *pkt, const uint8_t *buf, int length, void *lo
     int consumed, ts;
     int is_startcode_format = 0;
 
-    // Detect format at the beginning: check for start code format (0x000001 or 0x00000001)
-    if (length >= 3 && AV_RB24(buf) == 0x000001) {
-        is_startcode_format = 1;
-    } else if (length >= 4 && AV_RB32(buf) == 0x00000001) {
+    // Detect format at the beginning: check for start code format (0x000001)
+    if (av1_is_startcode_format(buf, length)) {
         is_startcode_format = 1;
     }
 
@@ -199,10 +197,8 @@ int ff_av1_packet_split(AV1Packet *pkt, const uint8_t *buf, int length, void *lo
 
         // Skip start code if in start code format
         if (is_startcode_format) {
-            if (bytestream2_peek_be24(&bc) == 1) {
+            if (av1_is_startcode_format(bc.buffer, bytestream2_get_bytes_left(&bc))) {
                 bytestream2_skip(&bc, 3);
-            } else if (bytestream2_get_bytes_left(&bc) >= 4 && bytestream2_peek_be32(&bc) == 1) {
-                bytestream2_skip(&bc, 4);
             }
             ts = 1;
         } else {
