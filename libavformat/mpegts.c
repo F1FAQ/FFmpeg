@@ -817,6 +817,7 @@ static const StreamType ISO_types[] = {
     { STREAM_TYPE_VIDEO_HEVC,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_HEVC       },
     { STREAM_TYPE_VIDEO_JPEGXS,   AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_JPEGXS     },
     { STREAM_TYPE_VIDEO_VVC,      AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_VVC        },
+    { STREAM_TYPE_VIDEO_AV1,      AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AV1        },
     { STREAM_TYPE_VIDEO_CAVS,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_CAVS       },
     { STREAM_TYPE_VIDEO_DIRAC,    AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_DIRAC      },
     { STREAM_TYPE_VIDEO_AVS2,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AVS2       },
@@ -874,6 +875,7 @@ static const StreamType REGD_types[] = {
     { MKTAG('E', 'A', 'C', '3'), AVMEDIA_TYPE_AUDIO, AV_CODEC_ID_EAC3  },
     { MKTAG('H', 'E', 'V', 'C'), AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_HEVC  },
     { MKTAG('V', 'V', 'C', ' '), AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_VVC   },
+    { MKTAG('A', 'V', '0', '1'), AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AV1   },
     { MKTAG('K', 'L', 'V', 'A'), AVMEDIA_TYPE_DATA,  AV_CODEC_ID_SMPTE_KLV },
     { MKTAG('V', 'A', 'N', 'C'), AVMEDIA_TYPE_DATA,  AV_CODEC_ID_SMPTE_2038 },
     { MKTAG('I', 'D', '3', ' '), AVMEDIA_TYPE_DATA,  AV_CODEC_ID_TIMED_ID3 },
@@ -2294,6 +2296,38 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
             sti->need_parsing = 0;
         }
         break;
+        case AV1_VIDEO_DESCRIPTOR:
+        /* Parse AV1 video descriptor per AOM "Carriage of AV1 in MPEG-2 TS" Section 2.2 */
+        if (st->codecpar->codec_id == AV_CODEC_ID_AV1 && desc_len >= 4) {
+            int marker_version, seq_profile, seq_level_idx_0;
+            int seq_tier_0, high_bitdepth, twelve_bit, monochrome;
+            int byte1, byte2;
+
+            marker_version = get8(pp, desc_end);
+            /* marker should be 1, version should be 1 */
+            if ((marker_version & 0x80) && (marker_version & 0x7F) == 1) {
+                byte1 = get8(pp, desc_end);
+                byte2 = get8(pp, desc_end);
+                (void)get8(pp, desc_end); /* byte3: hdr_wcg_idc, reserved, etc. */
+
+                seq_profile      = (byte1 >> 5) & 0x07;
+                seq_level_idx_0  = byte1 & 0x1F;
+                seq_tier_0       = (byte2 >> 7) & 0x01;
+                high_bitdepth    = (byte2 >> 6) & 0x01;
+                twelve_bit       = (byte2 >> 5) & 0x01;
+                monochrome       = (byte2 >> 4) & 0x01;
+
+                /* Set profile and level */
+                st->codecpar->profile = seq_profile;
+                st->codecpar->level = seq_level_idx_0;
+
+                av_log(fc, AV_LOG_TRACE, "AV1 video descriptor: profile=%d, level=%d, "
+                       "tier=%d, bitdepth=%d, mono=%d\n",
+                       seq_profile, seq_level_idx_0, seq_tier_0,
+                       high_bitdepth ? (twelve_bit ? 12 : 10) : 8, monochrome);
+            }
+        }
+        break;    
     case DOVI_VIDEO_STREAM_DESCRIPTOR:
         {
             uint32_t buf;
