@@ -18,9 +18,12 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
+#include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixfmt.h"
 
+#include "av1_parse.h"
 #include "cbs.h"
 #include "cbs_internal.h"
 #include "cbs_av1.h"
@@ -125,23 +128,48 @@ static int cbs_av1_write_uvlc(CodedBitstreamContext *ctx, PutBitContext *pbc,
 static int cbs_av1_read_leb128(CodedBitstreamContext *ctx, GetBitContext *gbc,
                                const char *name, uint64_t *write_to)
 {
-    uint64_t value;
-    uint32_t byte;
-    int i;
+    uint64_t value = 0;
+    int k = 0;
+    uint8_t byte;
+    int index;
 
     CBS_TRACE_READ_START();
 
-    value = 0;
-    for (i = 0; i < 8; i++) {
-        if (get_bits_left(gbc) < 8) {
+    index = get_bits_count(gbc);
+
+    if ((index & 7) == 0 && get_bits_left(gbc) >= 64) {
+        const uint8_t *data = gbc->buffer + index / 8;
+        for (k = 0; k < 8; k++) {
+            byte = data[k];
+            value |= (uint64_t)(byte & 0x7f) << (k * 7);
+            if (!(byte & 0x80)) {
+                k++;
+                break;
+            }
+        }
+        if (k == 8 && (byte & 0x80)) {
             av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid leb128 at "
-                   "%s: bitstream ended.\n", name);
+                   "%s: value too large.\n", name);
             return AVERROR_INVALIDDATA;
         }
-        byte = get_bits(gbc, 8);
-        value |= (uint64_t)(byte & 0x7f) << (i * 7);
-        if (!(byte & 0x80))
-            break;
+        skip_bits(gbc, k * 8);
+    } else {
+        for (k = 0; k < 8; k++) {
+            if (get_bits_left(gbc) < 8) {
+                av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid leb128 at "
+                       "%s: bitstream ended.\n", name);
+                return AVERROR_INVALIDDATA;
+            }
+            byte = get_bits(gbc, 8);
+            value |= (uint64_t)(byte & 0x7f) << (k * 7);
+            if (!(byte & 0x80))
+                break;
+        }
+        if (k == 8) {
+            av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid leb128 at "
+                   "%s: value too large.\n", name);
+            return AVERROR_INVALIDDATA;
+        }
     }
 
     if (value > UINT32_MAX)
@@ -699,11 +727,10 @@ static int cbs_av1_split_fragment(CodedBitstreamContext *ctx,
                                   int header)
 {
 #if CBS_READ
-    GetBitContext gbc;
+    AV1Packet pkt = { 0 };
     uint8_t *data;
     size_t size;
-    uint64_t obu_length;
-    int pos, err, trace;
+    int err, trace;
 
     // Don't include this parsing in trace output.
     trace = ctx->trace_enable;
@@ -726,8 +753,7 @@ static int cbs_av1_split_fragment(CodedBitstreamContext *ctx,
 
         if (config_record_version != 1) {
             av_log(ctx->log_ctx, AV_LOG_ERROR,
-                   "Unknown version %d of AV1CodecConfigurationRecord "
-                   "found!\n",
+                   "Unsupported AV1CodecConfigurationRecord version %d\n",
                    config_record_version);
             err = AVERROR_INVALIDDATA;
             goto fail;
@@ -752,54 +778,41 @@ static int cbs_av1_split_fragment(CodedBitstreamContext *ctx,
         size -= 4;
     }
 
-    while (size > 0) {
-        AV1RawOBUHeader obu_header;
-        uint64_t obu_size;
+    // Use unified ff_av1_packet_split which automatically detects format
+    err = ff_av1_packet_split(&pkt, data, size, ctx->log_ctx);
+    if (err < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(err, errbuf, sizeof(errbuf));
+        av_log(ctx->log_ctx, AV_LOG_ERROR, "Failed to split AV1 fragment: "
+               "size=%zu, first_byte=0x%02x, is_startcode=%d, error=%d (%s)\n",
+               size, size > 0 ? data[0] : 0,
+               size >= 3 && AV_RB24(data) == 0x000001, err, errbuf);
+        goto fail;
+    }
 
-        init_get_bits(&gbc, data, 8 * size);
+    if (pkt.nb_obus == 0) {
+        av_log(ctx->log_ctx, AV_LOG_VERBOSE, "No OBUs found in fragment: "
+               "size=%zu, first_byte=0x%02x\n",
+               size, size > 0 ? data[0] : 0);
+        err = 0;
+        goto success;
+    }
 
-        err = cbs_av1_read_obu_header(ctx, &gbc, &obu_header);
+    for (int i = 0; i < pkt.nb_obus; i++) {
+        AVBufferRef *data_ref = pkt.obus[i].escaped_data == pkt.obus[i].raw_data ?
+                                frag->data_ref : pkt.buf.ref;
+        err = CBS_FUNC(append_unit_data)(frag, pkt.obus[i].type,
+                                         (uint8_t *)pkt.obus[i].escaped_data,
+                                         pkt.obus[i].escaped_size,
+                                         data_ref);
         if (err < 0)
             goto fail;
-
-        if (obu_header.obu_has_size_field) {
-            if (get_bits_left(&gbc) < 8) {
-                av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid OBU: fragment "
-                       "too short (%zu bytes).\n", size);
-                err = AVERROR_INVALIDDATA;
-                goto fail;
-            }
-            err = cbs_av1_read_leb128(ctx, &gbc, "obu_size", &obu_size);
-            if (err < 0)
-                goto fail;
-        } else
-            obu_size = size - 1 - obu_header.obu_extension_flag;
-
-        pos = get_bits_count(&gbc);
-        av_assert0(pos % 8 == 0 && pos / 8 <= size);
-
-        obu_length = pos / 8 + obu_size;
-
-        if (size < obu_length) {
-            av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid OBU length: "
-                   "%"PRIu64", but only %zu bytes remaining in fragment.\n",
-                   obu_length, size);
-            err = AVERROR_INVALIDDATA;
-            goto fail;
-        }
-
-        err = CBS_FUNC(append_unit_data)(frag, obu_header.obu_type,
-                                      data, obu_length, frag->data_ref);
-        if (err < 0)
-            goto fail;
-
-        data += obu_length;
-        size -= obu_length;
     }
 
 success:
     err = 0;
 fail:
+    ff_av1_packet_uninit(&pkt);
     ctx->trace_enable = trace;
     return err;
 #else
@@ -844,32 +857,66 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
     AV1RawOBU *obu;
     GetBitContext gbc;
     int err, start_pos, end_pos;
+    uint8_t fast_buf[4096 + AV_INPUT_BUFFER_PADDING_SIZE];
+    uint8_t *malloc_buf = NULL;
+    uint8_t *data_buf;
 
     err = CBS_FUNC(alloc_unit_content)(ctx, unit);
     if (err < 0)
         return err;
     obu = unit->content;
 
-    err = init_get_bits(&gbc, unit->data, 8 * unit->data_size);
+    // Default to direct access
+    data_buf = unit->data;
+
+    if (unit->data_size > 0) {
+        int obu_type = (unit->data[0] >> 3) & 0xF;
+        // These types are parsed fully (including trailing bits) or contain
+        // fields like LEB128 that might trigger over-reads if unpadded.
+        // We must ensure they are padded.
+        // Frame, TileGroup, and TileList are excluded because they are typically
+        // large (containing pixel data) and their parsing logic in CBS does not
+        // use get_bits() to read to the very end of the buffer.
+        if (obu_type != AV1_OBU_FRAME &&
+            obu_type != AV1_OBU_TILE_GROUP &&
+            obu_type != AV1_OBU_TILE_LIST) {
+            
+            if (unit->data_size <= 4096) {
+                memcpy(fast_buf, unit->data, unit->data_size);
+                memset(fast_buf + unit->data_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+                data_buf = fast_buf;
+            } else {
+                malloc_buf = av_malloc(unit->data_size + AV_INPUT_BUFFER_PADDING_SIZE);
+                if (!malloc_buf)
+                    return AVERROR(ENOMEM);
+                memcpy(malloc_buf, unit->data, unit->data_size);
+                memset(malloc_buf + unit->data_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+                data_buf = malloc_buf;
+            }
+        }
+    }
+
+    err = init_get_bits(&gbc, data_buf, 8 * unit->data_size);
     if (err < 0)
-        return err;
+        goto end;
 
     err = cbs_av1_read_obu_header(ctx, &gbc, &obu->header);
     if (err < 0)
-        return err;
+        goto end;
     av_assert0(obu->header.obu_type == unit->type);
 
     if (obu->header.obu_has_size_field) {
         uint64_t obu_size;
         err = cbs_av1_read_leb128(ctx, &gbc, "obu_size", &obu_size);
         if (err < 0)
-            return err;
+            goto end;
         obu->obu_size = obu_size;
     } else {
         if (unit->data_size < 1 + obu->header.obu_extension_flag) {
             av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid OBU length: "
                    "unit too short (%zu).\n", unit->data_size);
-            return AVERROR_INVALIDDATA;
+            err = AVERROR_INVALIDDATA;
+            goto end;
         }
         obu->obu_size = unit->data_size - 1 - obu->header.obu_extension_flag;
     }
@@ -885,7 +932,8 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
             int in_spatial_layer  =
                 (priv->operating_point_idc >> (priv->spatial_id + 8)) & 1;
             if (!in_temporal_layer || !in_spatial_layer) {
-                return AVERROR(EAGAIN); // drop_obu()
+                err = AVERROR(EAGAIN); // drop_obu()
+                goto end;
             }
         }
     }
@@ -896,7 +944,7 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
             err = cbs_av1_read_sequence_header_obu(ctx, &gbc,
                                                    &obu->obu.sequence_header);
             if (err < 0)
-                return err;
+                goto end;
 
             if (priv->operating_point >= 0) {
                 AV1RawSequenceHeader *sequence_header = &obu->obu.sequence_header;
@@ -905,7 +953,8 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
                     av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid Operating Point %d requested. "
                                                        "Must not be higher than %u.\n",
                            priv->operating_point, sequence_header->operating_points_cnt_minus_1);
-                    return AVERROR(EINVAL);
+                    err = AVERROR(EINVAL);
+                    goto end;
                 }
                 priv->operating_point_idc = sequence_header->operating_point_idc[priv->operating_point];
             }
@@ -918,7 +967,7 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
         {
             err = cbs_av1_read_temporal_delimiter_obu(ctx, &gbc);
             if (err < 0)
-                return err;
+                goto end;
         }
         break;
     case AV1_OBU_FRAME_HEADER:
@@ -930,14 +979,14 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
                                                 AV1_OBU_REDUNDANT_FRAME_HEADER,
                                                 unit->data_ref);
             if (err < 0)
-                return err;
+                goto end;
         }
         break;
     case AV1_OBU_FRAME:
             err = cbs_av1_read_frame_obu(ctx, &gbc, &obu->obu.frame,
                                          unit->data_ref);
             if (err < 0)
-                return err;
+                goto end;
     // fall-through
     case AV1_OBU_TILE_GROUP:
         {
@@ -948,18 +997,18 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
                                         &tile_group->data,
                                         &tile_group->data_size);
             if (err < 0)
-                return err;
+                goto end;
 
             err = cbs_av1_read_tile_group_obu(ctx, &gbc, tile_group);
             if (err < 0)
-                return err;
+                goto end;
 
             err = cbs_av1_ref_tile_data(ctx, unit, &gbc,
                                         &tile_group->tile_data.data_ref,
                                         &tile_group->tile_data.data,
                                         &tile_group->tile_data.data_size);
             if (err < 0)
-                return err;
+                goto end;
         }
         break;
 #if CBS_AV1_OBU_TILE_LIST
@@ -968,14 +1017,14 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
             err = cbs_av1_read_tile_list_obu(ctx, &gbc,
                                              &obu->obu.tile_list);
             if (err < 0)
-                return err;
+                goto end;
 
             err = cbs_av1_ref_tile_data(ctx, unit, &gbc,
                                         &obu->obu.tile_list.tile_data.data_ref,
                                         &obu->obu.tile_list.tile_data.data,
                                         &obu->obu.tile_list.tile_data.data_size);
             if (err < 0)
-                return err;
+                goto end;
         }
         break;
 #endif
@@ -984,7 +1033,7 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
         {
             err = cbs_av1_read_metadata_obu(ctx, &gbc, &obu->obu.metadata);
             if (err < 0)
-                return err;
+                goto end;
         }
         break;
 #endif
@@ -993,12 +1042,13 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
         {
             err = cbs_av1_read_padding_obu(ctx, &gbc, &obu->obu.padding);
             if (err < 0)
-                return err;
+                goto end;
         }
         break;
 #endif
     default:
-        return AVERROR(ENOSYS);
+        err = AVERROR(ENOSYS);
+        goto end;
     }
 
     end_pos = get_bits_count(&gbc);
@@ -1010,15 +1060,21 @@ static int cbs_av1_read_unit(CodedBitstreamContext *ctx,
         obu->header.obu_type != AV1_OBU_FRAME) {
         int nb_bits = obu->obu_size * 8 + start_pos - end_pos;
 
-        if (nb_bits <= 0)
-            return AVERROR_INVALIDDATA;
+        if (nb_bits <= 0) {
+            err = AVERROR_INVALIDDATA;
+            goto end;
+        }
 
         err = cbs_av1_read_trailing_bits(ctx, &gbc, nb_bits);
         if (err < 0)
-            return err;
+            goto end;
     }
 
-    return 0;
+    err = 0;
+
+end:
+    av_free(malloc_buf);
+    return err;
 #else
     return AVERROR(ENOSYS);
 #endif
