@@ -146,6 +146,7 @@
 #define STREAM_TYPE_VIDEO_HEVC      0x24
 #define STREAM_TYPE_VIDEO_JPEGXS    0x32
 #define STREAM_TYPE_VIDEO_VVC       0x33
+#define STREAM_TYPE_VIDEO_AV1       0x06  /* Per AOM AV1-MPEG2-TS draft spec */
 #define STREAM_TYPE_VIDEO_CAVS      0x42
 #define STREAM_TYPE_VIDEO_AVS2      0xd2
 #define STREAM_TYPE_VIDEO_AVS3      0xd4
@@ -229,6 +230,10 @@ https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/
 /** see "Dolby Vision Streams Within the MPEG-2 Transport Stream Format"
 https://professional.dolby.com/siteassets/content-creation/dolby-vision-for-content-creators/dolby-vision-bitstreams-in-mpeg-2-transport-stream-multiplex-v1.2.pdf */
 #define DOVI_VIDEO_STREAM_DESCRIPTOR 0xb0
+
+/** AV1 video descriptor per AOM "Carriage of AV1 in MPEG-2 TS" Section 2.2
+    https://aomediacodec.github.io/av1-mpeg2-ts/ */
+#define AV1_VIDEO_DESCRIPTOR 0x80
 
 #define DATA_COMPONENT_DESCRIPTOR 0xfd /* ARIB STD-B10 */
 
