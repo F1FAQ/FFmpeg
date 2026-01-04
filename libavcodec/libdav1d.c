@@ -296,6 +296,48 @@ static void libdav1d_user_data_free(const uint8_t *data, void *opaque) {
     av_packet_free(&pkt);
 }
 
+/**
+ * Convert start code format to Section 5 format for libdav1d.
+ * This is needed when receiving AV1 data from MPEG-TS demuxer.
+ */
+static int libdav1d_convert_startcode(AVCodecContext *c, AVPacket *pkt)
+{
+    AV1Packet av1_pkt = { 0 };
+    uint8_t *new_data;
+    size_t new_size = 0;
+    int ret, i;
+
+    ret = ff_av1_packet_split_startcode(&av1_pkt, pkt->data, pkt->size, c);
+    if (ret < 0)
+        return ret;
+
+    /* Calculate output size */
+    for (i = 0; i < av1_pkt.nb_obus; i++)
+        new_size += av1_pkt.obus[i].raw_size;
+
+    if (new_size == 0) {
+        ff_av1_packet_uninit(&av1_pkt);
+        return 0;
+    }
+
+    /* Allocate new buffer */
+    ret = av_new_packet(pkt, new_size);
+    if (ret < 0) {
+        ff_av1_packet_uninit(&av1_pkt);
+        return ret;
+    }
+
+    /* Copy OBUs without start codes */
+    new_data = pkt->data;
+    for (i = 0; i < av1_pkt.nb_obus; i++) {
+        memcpy(new_data, av1_pkt.obus[i].raw_data, av1_pkt.obus[i].raw_size);
+        new_data += av1_pkt.obus[i].raw_size;
+    }
+
+    ff_av1_packet_uninit(&av1_pkt);
+    return 0;
+}
+
 static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
 {
     Libdav1dContext *dav1d = c->priv_data;
@@ -315,6 +357,29 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
         }
 
         if (pkt->size) {
+            /* Convert MPEG-TS start code format to Section 5 if needed */
+            if (ff_av1_is_startcode_format(pkt->data, pkt->size)) {
+                AVPacket *new_pkt = av_packet_alloc();
+                if (!new_pkt) {
+                    av_packet_free(&pkt);
+                    return AVERROR(ENOMEM);
+                }
+
+                res = av_packet_ref(new_pkt, pkt);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    av_packet_free(&new_pkt);
+                    return res;
+                }
+                av_packet_free(&pkt);
+                pkt = new_pkt;
+
+                res = libdav1d_convert_startcode(c, pkt);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    return res;
+                }
+            }
             res = dav1d_data_wrap(data, pkt->data, pkt->size,
                                   libdav1d_data_free, pkt->buf);
             if (res < 0) {
