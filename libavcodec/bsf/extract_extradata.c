@@ -100,6 +100,7 @@ static int extract_extradata_av1(AVBSFContext *ctx, AVPacket *pkt,
     int extradata_size = 0, filtered_size = 0;
     int i, has_seq = 0, ret = 0;
 
+    /* Use unified ff_av1_packet_split which automatically detects format */
     ret = ff_av1_packet_split(&s->av1_pkt, pkt->data, pkt->size, ctx);
     if (ret < 0)
         return ret;
@@ -107,7 +108,10 @@ static int extract_extradata_av1(AVBSFContext *ctx, AVPacket *pkt,
     for (i = 0; i < s->av1_pkt.nb_obus; i++) {
         AV1OBU *obu = &s->av1_pkt.obus[i];
         if (obu_is_global(obu)) {
-            extradata_size += obu->raw_size;
+            // Use escaped_size instead of raw_size to ensure consistent extradata format
+            // (Section 5 format without EPB). raw_size includes EPB which can vary
+            // depending on the input format (start code vs Section 5).
+            extradata_size += obu->escaped_size;
             if (obu->type == AV1_OBU_SEQUENCE_HEADER)
                 has_seq = 1;
         } else if (s->remove) {
@@ -144,7 +148,8 @@ static int extract_extradata_av1(AVBSFContext *ctx, AVPacket *pkt,
         for (i = 0; i < s->av1_pkt.nb_obus; i++) {
             AV1OBU *obu = &s->av1_pkt.obus[i];
             if (obu_is_global(obu)) {
-                bytestream2_put_bufferu(&pb_extradata, obu->raw_data, obu->raw_size);
+                // Use escaped_data and escaped_size to ensure consistent format (Section 5, no EPB)
+                bytestream2_put_bufferu(&pb_extradata, obu->escaped_data, obu->escaped_size);
             } else if (s->remove) {
                 bytestream2_put_bufferu(&pb_filtered_data, obu->raw_data, obu->raw_size);
             }
