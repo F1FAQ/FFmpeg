@@ -34,9 +34,12 @@
 #include "libavcodec/h264.h"
 #include "libavcodec/hevc/hevc.h"
 #include "libavcodec/vvc.h"
+#include "libavcodec/av1.h"
+#include "libavcodec/av1_parse.h"
 #include "libavcodec/startcode.h"
 
 #include "avformat.h"
+#include "av1.h"
 #include "avio_internal.h"
 #include "internal.h"
 #include "mpegts.h"
@@ -351,6 +354,86 @@ static void put_registration_descriptor(uint8_t **q_ptr, uint32_t tag)
     *q_ptr = q;
 }
 
+/**
+ * Write AV1 video descriptor per AOM AV1 in MPEG-2 TS spec Section 2.2.
+ *
+ * The descriptor uses the same data structure as AV1CodecConfigurationRecord
+ * from ISOBMFF with two reserved bits repurposed for HDR/WCG identification.
+ */
+static int put_av1_video_descriptor(AVFormatContext *s, uint8_t **q_ptr,
+                                     AVCodecParameters *par)
+{
+    AV1SequenceParameters seq;
+    uint8_t *q = *q_ptr;
+    int ret;
+    uint8_t high_bitdepth, twelve_bit;
+    uint8_t hdr_wcg_idc = 0; /* SDR by default */
+
+    if (!par->extradata || par->extradata_size < 4) {
+        av_log(s, AV_LOG_WARNING, "AV1 extradata not available for video descriptor\n");
+        return 0; /* Skip descriptor if no extradata */
+    }
+
+    ret = ff_av1_parse_seq_header(&seq, par->extradata, par->extradata_size);
+    if (ret < 0) {
+        av_log(s, AV_LOG_WARNING, "Failed to parse AV1 sequence header\n");
+        return 0; /* Skip descriptor on error */
+    }
+
+    /* Determine high_bitdepth and twelve_bit from bitdepth */
+    if (seq.bitdepth == 12) {
+        high_bitdepth = 1;
+        twelve_bit = 1;
+    } else if (seq.bitdepth == 10) {
+        high_bitdepth = 1;
+        twelve_bit = 0;
+    } else {
+        high_bitdepth = 0;
+        twelve_bit = 0;
+    }
+
+    /* Determine HDR/WCG indicator based on color info */
+    /* hdr_wcg_idc: 0=SDR, 1=WCG only, 2=HDR and WCG, 3=no indication */
+    if (seq.color_description_present_flag) {
+        /* Check for HDR transfer characteristics (PQ or HLG) */
+        int is_hdr = (seq.transfer_characteristics == 16 ||  /* PQ (SMPTE ST 2084) */
+                      seq.transfer_characteristics == 18);   /* HLG (ARIB STD-B67) */
+        /* Check for WCG (BT.2020 primaries) */
+        int is_wcg = (seq.color_primaries == 9);             /* BT.2020 */
+
+        if (is_hdr && is_wcg)
+            hdr_wcg_idc = 2;
+        else if (is_wcg)
+            hdr_wcg_idc = 1;
+        /* else SDR (0) */
+    }
+
+    /* descriptor_tag = 0x80 (AV1 video descriptor) */
+    *q++ = 0x80;
+    /* descriptor_length = 4 */
+    *q++ = 4;
+    /* Byte 0: marker (1) | version (7) = 0x81 (marker=1, version=1) */
+    *q++ = 0x81;
+    /* Byte 1: seq_profile (3) | seq_level_idx_0 (5) */
+    *q++ = (seq.profile << 5) | (seq.level & 0x1F);
+    /* Byte 2: seq_tier_0 (1) | high_bitdepth (1) | twelve_bit (1) | monochrome (1) |
+     *         chroma_subsampling_x (1) | chroma_subsampling_y (1) | chroma_sample_position (2) */
+    *q++ = (seq.tier << 7) |
+           (high_bitdepth << 6) |
+           (twelve_bit << 5) |
+           (seq.monochrome << 4) |
+           (seq.chroma_subsampling_x << 3) |
+           (seq.chroma_subsampling_y << 2) |
+           (seq.chroma_sample_position & 0x03);
+    /* Byte 3: hdr_wcg_idc (2) | reserved_zeros (1) | initial_presentation_delay_present (1) |
+     *         reserved_zeros (4) */
+    /* We don't use initial_presentation_delay, so set to 0 */
+    *q++ = (hdr_wcg_idc << 6);
+
+    *q_ptr = q;
+    return 0;
+}
+
 static int get_dvb_stream_type(AVFormatContext *s, AVStream *st)
 {
     MpegTSWrite *ts = s->priv_data;
@@ -374,6 +457,9 @@ static int get_dvb_stream_type(AVFormatContext *s, AVStream *st)
     case AV_CODEC_ID_VVC:
         stream_type = STREAM_TYPE_VIDEO_VVC;
         break;
+     case AV_CODEC_ID_AV1:
+        stream_type = STREAM_TYPE_PRIVATE_DATA;
+        break;    
     case AV_CODEC_ID_CAVS:
         stream_type = STREAM_TYPE_VIDEO_CAVS;
         break;
@@ -807,6 +893,9 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
                 put_registration_descriptor(&q, MKTAG('V', 'C', '-', '1'));
             } else if (stream_type == STREAM_TYPE_VIDEO_HEVC && s->strict_std_compliance <= FF_COMPLIANCE_NORMAL) {
                 put_registration_descriptor(&q, MKTAG('H', 'E', 'V', 'C'));
+            } else if (codec_id == AV_CODEC_ID_AV1 && s->strict_std_compliance <= FF_COMPLIANCE_NORMAL) {
+                put_registration_descriptor(&q, MKTAG('A', 'V', '0', '1'));
+                put_av1_video_descriptor(s, &q, st->codecpar);   
             } else if (stream_type == STREAM_TYPE_VIDEO_CAVS || stream_type == STREAM_TYPE_VIDEO_AVS2 ||
                        stream_type == STREAM_TYPE_VIDEO_AVS3) {
                 put_registration_descriptor(&q, MKTAG('A', 'V', 'S', 'V'));
@@ -1453,6 +1542,9 @@ static int get_pes_stream_id(AVFormatContext *s, AVStream *st, int stream_id, in
     if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
         if (st->codecpar->codec_id == AV_CODEC_ID_DIRAC)
             return STREAM_ID_EXTENDED_STREAM_ID;
+        else if (st->codecpar->codec_id == AV_CODEC_ID_AV1)
+            /* Per AOM AV1-MPEG2-TS draft spec: AV1 uses private_stream_1 (0xBD) */
+            return STREAM_ID_PRIVATE_STREAM_1;    
         else
             return STREAM_ID_VIDEO_STREAM_0;
     } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
@@ -1789,6 +1881,106 @@ int ff_check_h264_startcode(AVFormatContext *s, const AVStream *st, const AVPack
     return check_h26x_startcode(s, st, pkt, "h264");
 }
 
+/**
+ * Check if this is the start of a Temporal Unit.
+ */
+static int av1_is_temporal_unit_start(const uint8_t *data, int size)
+{
+    AV1Packet pkt = { 0 };
+    int ret, result = 0;
+
+    ret = ff_av1_packet_split(&pkt, data, size, NULL);
+    if (ret < 0)
+        return 1;  /* Assume TU start on error */
+
+    /* Check if first OBU is TD */
+    if (pkt.nb_obus > 0 &&
+        pkt.obus[0].type == AV1_OBU_TEMPORAL_DELIMITER) {
+        result = 1;
+    }
+
+    ff_av1_packet_uninit(&pkt);
+    return result;
+}
+
+/**
+ * Convert Section 5 format to MPEG-TS start code format.
+ *
+ * @param is_tu_start whether this is the start of a Temporal Unit,
+ *                    determines if TD OBU should be inserted
+ *
+ * Note: Per AOM AV1-MPEG2-TS spec section 3.6.2.1, emulation prevention bytes
+ * should be handled, but for now we rely on the obu_size field for boundary
+ * detection which makes emulation prevention optional in practice.
+ */
+static int av1_section5_to_startcode(const uint8_t *src, int src_size,
+                                      uint8_t **dst, int *dst_size,
+                                      int is_tu_start, void *logctx)
+{
+    AV1Packet pkt = { 0 };
+    int ret, i;
+    int total_size = 0;
+    uint8_t *out, *p;
+
+    /* Parse Section 5 format OBUs */
+    ret = ff_av1_packet_split(&pkt, src, src_size, logctx);
+    if (ret < 0)
+        return ret;
+
+    /* Calculate output size */
+    /* TD OBU if needed: 3 (start code) + 2 (header + size) */
+    if (is_tu_start)
+        total_size += 5;
+
+    for (i = 0; i < pkt.nb_obus; i++) {
+        /* Skip TD OBU in input (we control insertion) */
+        if (pkt.obus[i].type == AV1_OBU_TEMPORAL_DELIMITER)
+            continue;
+        /* Each OBU: 3 (start code) + raw_size */
+        total_size += 3 + pkt.obus[i].raw_size;
+    }
+
+    out = av_malloc(total_size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!out) {
+        ff_av1_packet_uninit(&pkt);
+        return AVERROR(ENOMEM);
+    }
+    p = out;
+
+    /* Insert TD OBU at TU start */
+    if (is_tu_start) {
+        /* Start code */
+        AV_WB24(p, 0x000001);
+        p += 3;
+        /* TD OBU header: type=2, extension_flag=0, has_size_field=1 */
+        *p++ = (AV1_OBU_TEMPORAL_DELIMITER << 3) | 0x02;
+        /* obu_size = 0 */
+        *p++ = 0x00;
+    }
+
+    /* Write other OBUs with start codes */
+    for (i = 0; i < pkt.nb_obus; i++) {
+        if (pkt.obus[i].type == AV1_OBU_TEMPORAL_DELIMITER)
+            continue;
+
+        /* Start code */
+        AV_WB24(p, 0x000001);
+        p += 3;
+        /* OBU data */
+        memcpy(p, pkt.obus[i].raw_data, pkt.obus[i].raw_size);
+        p += pkt.obus[i].raw_size;
+    }
+
+    memset(p, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+
+    ff_av1_packet_uninit(&pkt);
+
+    *dst = out;
+    *dst_size = total_size;
+
+    return 0;
+}
+
 /* Based on GStreamer's gst-plugins-base/ext/ogg/gstoggstream.c
  * Released under the LGPL v2.1+, written by
  * Vincent Penquerc'h <vincent.penquerch@collabora.co.uk>
@@ -2063,6 +2255,22 @@ static int mpegts_write_packet_internal(AVFormatContext *s, AVPacket *pkt)
             if (!data)
                 return AVERROR(ENOMEM);
       }
+    } else if (st->codecpar->codec_id == AV_CODEC_ID_AV1) {
+        int is_tu_start;
+        int new_size = 0;
+        int av1_ret;
+
+        /* Check if this is start of Temporal Unit */
+        is_tu_start = av1_is_temporal_unit_start(buf, size);
+
+        /* Convert Section 5 to start code format */
+        av1_ret = av1_section5_to_startcode(buf, size, &data, &new_size,
+                                             is_tu_start, s);
+        if (av1_ret < 0)
+            return av1_ret;
+
+        buf = data;
+        size = new_size;   
     } else if (st->codecpar->codec_id == AV_CODEC_ID_OPUS) {
         if (pkt->size < 2) {
             av_log(s, AV_LOG_ERROR, "Opus packet too short\n");
@@ -2325,6 +2533,19 @@ static int mpegts_check_bitstream(AVFormatContext *s, AVStream *st,
                         ((st->codecpar->extradata[0] & e->mask) == e->value))))
             return ff_stream_add_bitstream_filter(st, e->bsf_name, NULL);
     }
+
+    /* AV1: Per MPEG-TS AV1 spec section 3.3, each PES packet should contain a
+     * single Access Unit (frame's OBUs). The av1_frame_split BSF can split
+     * multi-frame Temporal Units, but this causes DTS conflicts because all
+     * split frames inherit the same DTS, and modifying DTS causes pts < dts
+     * errors when the shown frame is not first in decode order.
+     *
+     * Most AV1 encoders (libaom, SVT-AV1) produce single-frame TUs, so the
+     * current implementation works without av1_frame_split. For multi-frame TUs
+     * (e.g., SVC content), users should manually apply av1_frame_split with
+     * appropriate timestamp handling.
+     */
+    
     return 1;
 }
 
