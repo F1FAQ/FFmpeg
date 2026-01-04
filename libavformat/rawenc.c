@@ -24,6 +24,8 @@
 
 #include "libavutil/intreadwrite.h"
 
+#include "av1.h"
+
 #include "avformat.h"
 #include "rawenc.h"
 #include "mux.h"
@@ -569,6 +571,10 @@ const FFOutputFormat ff_mpeg2video_muxer = {
 static int obu_check_bitstream(AVFormatContext *s, AVStream *st,
                                const AVPacket *pkt)
 {
+    /* Convert from MPEG-TS start code format to Section 5 if needed */
+    if (ff_av1_is_startcode_format(pkt->data, pkt->size))
+        return ff_stream_add_bitstream_filter(st, "av1_tstosection5", NULL);
+
     return ff_stream_add_bitstream_filter(st, "av1_metadata", "td=insert");
 }
 
