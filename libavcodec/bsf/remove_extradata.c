@@ -47,9 +47,10 @@ static int av1_split(const uint8_t *buf, int buf_size, void *logctx)
 {
     AV1OBU obu;
     const uint8_t *ptr = buf, *end = buf + buf_size;
+    int ts = av1_is_startcode_format(buf, buf_size);
 
     while (ptr < end) {
-        int len = ff_av1_extract_obu(&obu, ptr, buf_size, logctx);
+        int len = ff_av1_extract_obu(&obu, NULL, ptr, end - ptr, ts, logctx);
         if (len < 0)
             break;
 
@@ -57,8 +58,7 @@ static int av1_split(const uint8_t *buf, int buf_size, void *logctx)
             obu.type == AV1_OBU_FRAME) {
             return ptr - buf;
         }
-        ptr      += len;
-        buf_size -= len;
+        ptr += len;
     }
 
     return 0;
@@ -252,3 +252,4 @@ const FFBitStreamFilter ff_remove_extradata_bsf = {
     .priv_data_size = sizeof(RemoveExtradataContext),
     .filter         = remove_extradata,
 };
+
