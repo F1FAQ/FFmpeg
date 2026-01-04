@@ -31,6 +31,7 @@
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/avassert.h"
+#include "libavutil/pixdesc.h"
 #include "libavutil/dovi_meta.h"
 #include "libavcodec/bytestream.h"
 #include "libavcodec/defs.h"
@@ -817,7 +818,6 @@ static const StreamType ISO_types[] = {
     { STREAM_TYPE_VIDEO_HEVC,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_HEVC       },
     { STREAM_TYPE_VIDEO_JPEGXS,   AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_JPEGXS     },
     { STREAM_TYPE_VIDEO_VVC,      AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_VVC        },
-    { STREAM_TYPE_VIDEO_AV1,      AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AV1        },
     { STREAM_TYPE_VIDEO_CAVS,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_CAVS       },
     { STREAM_TYPE_VIDEO_DIRAC,    AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_DIRAC      },
     { STREAM_TYPE_VIDEO_AVS2,     AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AVS2       },
@@ -2296,12 +2296,15 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
             sti->need_parsing = 0;
         }
         break;
-        case AV1_VIDEO_DESCRIPTOR:
+    case AV1_VIDEO_DESCRIPTOR:
         /* Parse AV1 video descriptor per AOM "Carriage of AV1 in MPEG-2 TS" Section 2.2 */
         if (st->codecpar->codec_id == AV_CODEC_ID_AV1 && desc_len >= 4) {
             int marker_version, seq_profile, seq_level_idx_0;
             int seq_tier_0, high_bitdepth, twelve_bit, monochrome;
+            int chroma_subsampling_x, chroma_subsampling_y;
             int byte1, byte2;
+            int bitdepth;
+            enum AVPixelFormat pix_fmt = AV_PIX_FMT_NONE;
 
             marker_version = get8(pp, desc_end);
             /* marker should be 1, version should be 1 */
@@ -2316,18 +2319,58 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
                 high_bitdepth    = (byte2 >> 6) & 0x01;
                 twelve_bit       = (byte2 >> 5) & 0x01;
                 monochrome       = (byte2 >> 4) & 0x01;
+                chroma_subsampling_x = (byte2 >> 3) & 0x01;
+                chroma_subsampling_y = (byte2 >> 2) & 0x01;
 
                 /* Set profile and level */
                 st->codecpar->profile = seq_profile;
                 st->codecpar->level = seq_level_idx_0;
 
+                /* Derive pixel format from descriptor fields */
+                bitdepth = high_bitdepth ? (twelve_bit ? 12 : 10) : 8;
+                if (monochrome) {
+                    if (bitdepth == 8)
+                        pix_fmt = AV_PIX_FMT_GRAY8;
+                    else if (bitdepth == 10)
+                        pix_fmt = AV_PIX_FMT_GRAY10LE;
+                    else
+                        pix_fmt = AV_PIX_FMT_GRAY12LE;
+                } else if (chroma_subsampling_x && chroma_subsampling_y) {
+                    /* 4:2:0 */
+                    if (bitdepth == 8)
+                        pix_fmt = AV_PIX_FMT_YUV420P;
+                    else if (bitdepth == 10)
+                        pix_fmt = AV_PIX_FMT_YUV420P10LE;
+                    else
+                        pix_fmt = AV_PIX_FMT_YUV420P12LE;
+                } else if (chroma_subsampling_x && !chroma_subsampling_y) {
+                    /* 4:2:2 */
+                    if (bitdepth == 8)
+                        pix_fmt = AV_PIX_FMT_YUV422P;
+                    else if (bitdepth == 10)
+                        pix_fmt = AV_PIX_FMT_YUV422P10LE;
+                    else
+                        pix_fmt = AV_PIX_FMT_YUV422P12LE;
+                } else {
+                    /* 4:4:4 */
+                    if (bitdepth == 8)
+                        pix_fmt = AV_PIX_FMT_YUV444P;
+                    else if (bitdepth == 10)
+                        pix_fmt = AV_PIX_FMT_YUV444P10LE;
+                    else
+                        pix_fmt = AV_PIX_FMT_YUV444P12LE;
+                }
+                if (pix_fmt != AV_PIX_FMT_NONE)
+                    st->codecpar->format = pix_fmt;
+
                 av_log(fc, AV_LOG_TRACE, "AV1 video descriptor: profile=%d, level=%d, "
-                       "tier=%d, bitdepth=%d, mono=%d\n",
+                       "tier=%d, bitdepth=%d, mono=%d, subsampling=%d:%d, pix_fmt=%s\n",
                        seq_profile, seq_level_idx_0, seq_tier_0,
-                       high_bitdepth ? (twelve_bit ? 12 : 10) : 8, monochrome);
+                       bitdepth, monochrome, chroma_subsampling_x, chroma_subsampling_y,
+                       av_get_pix_fmt_name(pix_fmt));
             }
         }
-        break;    
+        break;
     case DOVI_VIDEO_STREAM_DESCRIPTOR:
         {
             uint32_t buf;
