@@ -47,7 +47,8 @@ static int av1_split(const uint8_t *buf, int buf_size, void *logctx)
 {
     AV1OBU obu;
     const uint8_t *ptr = buf, *end = buf + buf_size;
-    int ts = av1_is_startcode_format(buf, buf_size);
+    int ts = (buf_size >= 3 && AV_RB24(buf) == 0x000001) ||
+             (buf_size >= 4 && AV_RB32(buf) == 0x00000001);
 
     while (ptr < end) {
         int len = ff_av1_extract_obu(&obu, NULL, ptr, end - ptr, ts, logctx);
