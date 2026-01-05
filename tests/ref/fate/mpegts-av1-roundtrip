@@ -1,0 +1,12 @@
+26cba250d5a1ce79ed7a0ce48d59c43f *tests/data/fate/mpegts-av1-roundtrip.mpegts
+57904 tests/data/fate/mpegts-av1-roundtrip.mpegts
+#extradata 0:       13, 0x0fc303f5
+#tb 0: 1/90000
+#media_type 0: video
+#codec_id 0: av1
+#dimensions 0: 352x288
+#sar 0: 1/1
+0,          0,          0,     3000,    30843, 0xdad3b085, S=1, MPEGTS Stream ID,        1, 0x00bd00bd
+0,       3000,       3000,     3000,    20788, 0x180636d8, F=0x0, S=1, MPEGTS Stream ID,        1, 0x00bd00bd
+0,       6000,       6000,     3000,     3532, 0x8002e3e6, F=0x0, S=1, MPEGTS Stream ID,        1, 0x00bd00bd
+0,       9000,       9000,     3000,       11, 0x01d50117, F=0x0, S=1, MPEGTS Stream ID,        1, 0x00bd00bd
