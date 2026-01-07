@@ -58,6 +58,10 @@ int ff_av1_extract_obu(AV1OBU *obu, AV1Buffer *buf, const uint8_t *src,
         if (si < 0)
             return si;
 
+        /* Clamp si to actual buffer length to prevent overflow */
+        if (si > length)
+            si = length;
+
         obu->type         = type;
         obu->temporal_id  = temporal_id;
         obu->spatial_id   = spatial_id;
@@ -71,7 +75,7 @@ int ff_av1_extract_obu(AV1OBU *obu, AV1Buffer *buf, const uint8_t *src,
         obu->escaped_data =
         obu->raw_data     = src;
         obu->escaped_size =
-        obu->raw_size     = FFMIN(si, length);
+        obu->raw_size     = si;
 
         goto end;
     } else if (i > length)
@@ -108,7 +112,7 @@ int ff_av1_extract_obu(AV1OBU *obu, AV1Buffer *buf, const uint8_t *src,
 
 nsc:
     memset(dst + di, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    len = parse_obu_header(dst, length, &obu_size, &start_pos,
+    len = parse_obu_header(dst, di, &obu_size, &start_pos,
                            &type, &temporal_id, &spatial_id);
     if (len < 0)
         return len;
@@ -119,6 +123,9 @@ nsc:
 
     obu->data     = dst + start_pos;
     obu->size     = obu_size;
+    if (obu->size > di - start_pos)
+        obu->size = di - start_pos;
+
     obu->escaped_data = dst;
     obu->escaped_size = di;
     obu->raw_data = src;
