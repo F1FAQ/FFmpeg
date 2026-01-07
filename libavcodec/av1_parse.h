@@ -121,60 +121,42 @@ static inline int parse_obu_header(const uint8_t *buf, int buf_size,
                                    int64_t *obu_size, int *start_pos, int *type,
                                    int *temporal_id, int *spatial_id)
 {
-    int i = 0;
-    int extension_flag, has_size_flag;
+    GetBitContext gb;
+    int ret, extension_flag, has_size_flag;
     int64_t size;
 
-    if (buf_size <= 0)
+    ret = init_get_bits8(&gb, buf, FFMIN(buf_size, MAX_OBU_HEADER_SIZE));
+    if (ret < 0)
+        return ret;
+
+    if (get_bits1(&gb) != 0) // obu_forbidden_bit
         return AVERROR_INVALIDDATA;
 
-    if (buf[0] & 0x80) // obu_forbidden_bit
-        return AVERROR_INVALIDDATA;
-
-    *type      = (buf[0] >> 3) & 0xF;
-    extension_flag = (buf[0] >> 2) & 1;
-    has_size_flag  = (buf[0] >> 1) & 1;
-    // obu_reserved_1bit is ignored
-
-    i = 1;
+    *type      = get_bits(&gb, 4);
+    extension_flag = get_bits1(&gb);
+    has_size_flag  = get_bits1(&gb);
+    skip_bits1(&gb); // obu_reserved_1bit
 
     if (extension_flag) {
-        if (i >= buf_size)
-            return AVERROR_INVALIDDATA;
-        *temporal_id = (buf[i] >> 5) & 0x7;
-        *spatial_id  = (buf[i] >> 3) & 0x3;
-        i++;
+        *temporal_id = get_bits(&gb, 3);
+        *spatial_id  = get_bits(&gb, 2);
+        skip_bits(&gb, 3); // extension_header_reserved_3bits
     } else {
         *temporal_id = *spatial_id = 0;
     }
 
-    if (has_size_flag) {
-        uint64_t leb = 0;
-        int leb_i;
-        for (leb_i = 0; leb_i < 8; leb_i++) {
-            uint8_t byte;
-            if (i >= buf_size)
-                return AVERROR_INVALIDDATA;
-            byte = buf[i++];
-            leb |= (uint64_t)(byte & 0x7f) << (leb_i * 7);
-            if (!(byte & 0x80))
-                break;
-        }
-        if (leb_i == 8) // Too long
-            return AVERROR_INVALIDDATA;
-        *obu_size = leb;
-    } else {
-        *obu_size = buf_size - 1 - extension_flag;
-    }
+    *obu_size  = has_size_flag ? get_leb128(&gb)
+                               : buf_size - 1 - extension_flag;
 
-    *start_pos = i;
-
-    if (*obu_size > INT_MAX - *start_pos)
+    if (get_bits_left(&gb) < 0)
         return AVERROR_INVALIDDATA;
+
+    *start_pos = get_bits_count(&gb) / 8;
 
     size = *obu_size + *start_pos;
 
-    return (int)size;
+    return size;
+
 }
 
 static inline int get_obu_bit_length(const uint8_t *buf, int size, int type)
