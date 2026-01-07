@@ -3513,6 +3513,13 @@ static int mkv_check_bitstream(AVFormatContext *s, AVStream *st,
     } else if (CONFIG_MATROSKA_MUXER &&
                st->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE) {
         ret = ff_stream_add_bitstream_filter(st, "pgs_frame_merge", NULL);
+    } else if (st->codecpar->codec_id == AV_CODEC_ID_AV1) {
+        /* Convert MPEG-TS start code format to Section 5 if needed */
+        if (ff_av1_is_startcode_format(pkt->data, pkt->size))
+            return ff_stream_add_bitstream_filter(st, "av1_tstosection5", NULL);
+        /* MKV requires extradata (av1C) - extract if missing */
+        if (!st->codecpar->extradata_size)
+            return ff_stream_add_bitstream_filter(st, "extract_extradata", NULL);
     }
 
     return ret;
