@@ -273,6 +273,7 @@ static av_cold int libdav1d_init(AVCodecContext *c)
     sd = ff_get_coded_side_data(c, AV_PKT_DATA_DOVI_CONF);
     if (sd && sd->size >= sizeof(dav1d->dovi.cfg))
         dav1d->dovi.cfg = *(AVDOVIDecoderConfigurationRecord *) sd->data;
+
     return 0;
 }
 
@@ -307,13 +308,13 @@ static int libdav1d_convert_startcode(AVCodecContext *c, AVPacket *pkt)
     size_t new_size = 0;
     int ret, i;
 
-    ret = ff_av1_packet_split_startcode(&av1_pkt, pkt->data, pkt->size, c);
+    ret = ff_av1_packet_split(&av1_pkt, pkt->data, pkt->size, c);
     if (ret < 0)
         return ret;
 
     /* Calculate output size */
     for (i = 0; i < av1_pkt.nb_obus; i++)
-        new_size += av1_pkt.obus[i].raw_size;
+        new_size += av1_pkt.obus[i].escaped_size;
 
     if (new_size == 0) {
         ff_av1_packet_uninit(&av1_pkt);
@@ -331,8 +332,8 @@ static int libdav1d_convert_startcode(AVCodecContext *c, AVPacket *pkt)
     /* Copy OBUs without start codes */
     new_data = pkt->data;
     for (i = 0; i < av1_pkt.nb_obus; i++) {
-        memcpy(new_data, av1_pkt.obus[i].raw_data, av1_pkt.obus[i].raw_size);
-        new_data += av1_pkt.obus[i].raw_size;
+        memcpy(new_data, av1_pkt.obus[i].escaped_data, av1_pkt.obus[i].escaped_size);
+        new_data += av1_pkt.obus[i].escaped_size;
     }
 
     ff_av1_packet_uninit(&av1_pkt);
@@ -359,7 +360,7 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
 
         if (pkt->size) {
             /* Convert MPEG-TS start code format to Section 5 if needed */
-            if (ff_av1_is_startcode_format(pkt->data, pkt->size)) {
+            if (av1_is_startcode_format(pkt->data, pkt->size)) {
                 AVPacket *new_pkt = av_packet_alloc();
                 if (!new_pkt) {
                     av_packet_free(&pkt);
@@ -381,23 +382,28 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
                     return res;
                 }
             }
-            res = dav1d_data_wrap(data, pkt->data, pkt->size,
-                                  libdav1d_data_free, pkt->buf);
-            if (res < 0) {
-                av_packet_free(&pkt);
-                return res;
-            }
 
-            pkt->buf = NULL;
+            if (pkt->size) {
+                res = dav1d_data_wrap(data, pkt->data, pkt->size,
+                                      libdav1d_data_free, pkt->buf);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    return res;
+                }
 
-            res = dav1d_data_wrap_user_data(data, (const uint8_t *)pkt,
-                                            libdav1d_user_data_free, pkt);
-            if (res < 0) {
+                pkt->buf = NULL;
+
+                res = dav1d_data_wrap_user_data(data, (const uint8_t *)pkt,
+                                                libdav1d_user_data_free, pkt);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    dav1d_data_unref(data);
+                    return res;
+                }
+                pkt = NULL;
+            } else {
                 av_packet_free(&pkt);
-                dav1d_data_unref(data);
-                return res;
             }
-            pkt = NULL;
         } else {
             av_packet_free(&pkt);
             if (res >= 0)
@@ -405,13 +411,15 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
         }
     }
 
-    res = dav1d_send_data(dav1d->c, data);
-    if (res < 0) {
-        if (res == AVERROR(EINVAL))
-            res = AVERROR_INVALIDDATA;
-        if (res != AVERROR(EAGAIN)) {
-            dav1d_data_unref(data);
-            return res;
+    if (data->sz) {
+        res = dav1d_send_data(dav1d->c, data);
+        if (res < 0) {
+            if (res == AVERROR(EINVAL))
+                res = AVERROR_INVALIDDATA;
+            if (res != AVERROR(EAGAIN)) {
+                dav1d_data_unref(data);
+                return res;
+            }
         }
     }
 
