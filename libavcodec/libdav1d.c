@@ -317,6 +317,7 @@ static int libdav1d_convert_startcode(AVCodecContext *c, AVPacket *pkt)
 
     if (new_size == 0) {
         ff_av1_packet_uninit(&av1_pkt);
+        av_shrink_packet(pkt, 0);
         return 0;
     }
 
