@@ -171,4 +171,3 @@ const FFBitStreamFilter ff_av1_tstosection5_bsf = {
     .close          = av1_tstosection5_close,
     .filter         = av1_tstosection5_filter,
 };
-

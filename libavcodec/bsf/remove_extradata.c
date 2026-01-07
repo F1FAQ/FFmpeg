@@ -58,7 +58,7 @@ static int av1_split(const uint8_t *buf, int buf_size, void *logctx)
             obu.type == AV1_OBU_FRAME) {
             return ptr - buf;
         }
-        ptr += len;
+        ptr      += len;
     }
 
     return 0;
