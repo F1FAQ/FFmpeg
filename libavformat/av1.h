@@ -39,6 +39,8 @@ typedef struct AV1SequenceParameters {
     uint8_t transfer_characteristics;
     uint8_t matrix_coefficients;
     uint8_t color_range;
+    uint8_t initial_display_delay_present;
+    uint8_t initial_display_delay_minus_1;
 } AV1SequenceParameters;
 
 /**
@@ -102,5 +104,42 @@ int ff_av1_parse_seq_header(AV1SequenceParameters *seq, const uint8_t *buf, int 
  * @return >= 0 in case of success, a negative AVERROR code in case of failure
  */
 int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size, int write_seq_header);
+
+/**
+ * Check if the packet starts with a Temporal Delimiter OBU.
+ *
+ * @param buf  Input buffer (Section 5 or start code format)
+ * @param size Buffer size
+ * @return 1 if starts with TD OBU, 0 otherwise
+ */
+int ff_av1_is_temporal_unit_start(const uint8_t *buf, int size);
+
+/**
+ * Check if the AV1 bitstream is in MPEG-TS start code format.
+ *
+ * Detects the MPEG-TS start code format where each OBU is prefixed with
+ * a 3-byte start code (0x000001) and followed by an OBU header.
+ * The obu_forbidden_bit (bit 7 of the byte after start code) must be 0
+ * to distinguish real start codes from payload data that happens to contain 0x000001.
+ *
+ * @param buf  Input buffer
+ * @param size Buffer size
+ * @return 1 if in start code format, 0 otherwise
+ */
+int ff_av1_is_startcode_format(const uint8_t *buf, int size);
+
+/**
+ * Convert AV1 Section 5 (low overhead) format to MPEG-TS start code format.
+ *
+ * @param buf      Input buffer (Section 5 format)
+ * @param size     Input buffer size
+ * @param out_buf  Output buffer (caller must av_free)
+ * @param out_size Output buffer size
+ * @param add_td   If non-zero and no TD OBU present, add one at the start
+ * @return 0 on success, negative AVERROR on failure
+ */
+int ff_av1_section5_to_startcode(const uint8_t *buf, int size,
+                                  uint8_t **out_buf, int *out_size,
+                                  int add_td);
 
 #endif /* AVFORMAT_AV1_H */
