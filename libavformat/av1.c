@@ -20,11 +20,13 @@
  */
 
 #include "libavutil/avassert.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixfmt.h"
 #include "libavcodec/av1.h"
 #include "libavcodec/av1_parse.h"
 #include "libavcodec/defs.h"
+#include "libavcodec/get_bits.h"
 #include "libavcodec/put_bits.h"
 #include "av1.h"
 #include "avio.h"
@@ -44,14 +46,14 @@ static int av1_filter_obus(AVIOContext *pb, const uint8_t *buf,
 
     off = size = 0;
     while (buf < end) {
+        int obu_type, start_pos, temporal_id, spatial_id;
         int64_t obu_size;
-        int start_pos, type, temporal_id, spatial_id;
-        int len = parse_obu_header(buf, end - buf, &obu_size, &start_pos,
-                                   &type, &temporal_id, &spatial_id);
+        int len = parse_obu_header(buf, end - buf, &obu_size, &start_pos, &obu_type,
+                                   &temporal_id, &spatial_id);
         if (len < 0)
             return len;
 
-        switch (type) {
+        switch (obu_type) {
         case AV1_OBU_TEMPORAL_DELIMITER:
         case AV1_OBU_REDUNDANT_FRAME_HEADER:
         case AV1_OBU_TILE_LIST:
@@ -273,8 +275,13 @@ static int parse_sequence_header(AV1SequenceParameters *seq_params, const uint8_
             }
 
             if (initial_display_delay_present_flag) {
-                if (get_bits1(&gb)) // initial_display_delay_present_for_this_op
-                    skip_bits(&gb, 4); // initial_display_delay_minus_1
+                if (get_bits1(&gb)) { // initial_display_delay_present_for_this_op
+                    int initial_display_delay_minus_1 = get_bits(&gb, 4);
+                    if (i == 0) {
+                        seq_params->initial_display_delay_present = 1;
+                        seq_params->initial_display_delay_minus_1 = initial_display_delay_minus_1;
+                    }
+                }
             }
 
             if (i == 0) {
@@ -373,14 +380,14 @@ int ff_av1_parse_seq_header(AV1SequenceParameters *seq, const uint8_t *buf, int 
     }
 
     while (size > 0) {
+        int obu_type, start_pos, temporal_id, spatial_id;
         int64_t obu_size;
-        int start_pos, type, temporal_id, spatial_id;
-        int len = parse_obu_header(buf, size, &obu_size, &start_pos,
-                                   &type, &temporal_id, &spatial_id);
+        int len = parse_obu_header(buf, size, &obu_size, &start_pos, &obu_type,
+                                   &temporal_id, &spatial_id);
         if (len < 0)
             return len;
 
-        switch (type) {
+        switch (obu_type) {
         case AV1_OBU_SEQUENCE_HEADER:
             if (!obu_size)
                 return AVERROR_INVALIDDATA;
@@ -428,16 +435,16 @@ int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
         return ret;
 
     while (size > 0) {
+        int obu_type, start_pos, temporal_id, spatial_id;
         int64_t obu_size;
-        int start_pos, type, temporal_id, spatial_id;
-        int len = parse_obu_header(buf, size, &obu_size, &start_pos,
-                                   &type, &temporal_id, &spatial_id);
+        int len = parse_obu_header(buf, size, &obu_size, &start_pos, &obu_type,
+                                   &temporal_id, &spatial_id);
         if (len < 0) {
             ret = len;
             goto fail;
         }
 
-        switch (type) {
+        switch (obu_type) {
         case AV1_OBU_SEQUENCE_HEADER:
             nb_seq++;
             if (!obu_size || nb_seq > 1) {
@@ -499,4 +506,130 @@ fail:
     ffio_free_dyn_buf(&meta_pb);
 
     return ret;
+}
+
+int ff_av1_is_temporal_unit_start(const uint8_t *buf, int size)
+{
+    int obu_type, start_pos, temporal_id, spatial_id;
+    int64_t obu_size;
+
+    if (size >= 3 && AV_RB24(buf) == 0x000001) {
+        buf  += 3;
+        size -= 3;
+    }
+
+    return parse_obu_header(buf, size, &obu_size, &start_pos, &obu_type,
+                           &temporal_id, &spatial_id) >= 0 &&
+           obu_type == AV1_OBU_TEMPORAL_DELIMITER;
+}
+
+static int av1_epb_count(const uint8_t *src, int size)
+{
+    int count = 0, zeros = 0;
+    for (int i = 0; i < size; i++) {
+        if (zeros == 2 && src[i] <= 3) {
+            count++;
+            zeros = 0;
+        }
+        if (src[i] == 0)
+            zeros++;
+        else
+            zeros = 0;
+    }
+    return count;
+}
+
+static int av1_write_with_epb(uint8_t *dst, const uint8_t *src, int size)
+{
+    uint8_t *start = dst;
+    int zeros = 0;
+    for (int i = 0; i < size; i++) {
+        if (zeros == 2 && src[i] <= 3) {
+            *dst++ = 0x03;
+            zeros = 0;
+        }
+        *dst++ = src[i];
+        if (src[i] == 0)
+            zeros++;
+        else
+            zeros = 0;
+    }
+    return dst - start;
+}
+
+int ff_av1_section5_to_startcode(const uint8_t *buf, int size,
+                                  uint8_t **out_buf, int *out_size,
+                                  int add_td)
+{
+    const uint8_t *p = buf, *end = buf + size;
+    uint8_t *dst, *out;
+    int total_size = 0;
+    int has_td = 0;
+    int obu_type, start_pos, temporal_id, spatial_id;
+    int64_t obu_size;
+    int ret;
+    int epb_count;
+
+    /* First pass: calculate output size and check for TD */
+    while (p < end) {
+        ret = parse_obu_header(p, end - p, &obu_size, &start_pos, &obu_type,
+                              &temporal_id, &spatial_id);
+        if (ret < 0)
+            return ret;
+
+        if (obu_type == AV1_OBU_TEMPORAL_DELIMITER)
+            has_td = 1;
+
+        epb_count = av1_epb_count(p, ret);
+        total_size += 3 + ret + epb_count;  /* start code (3) + OBU + EPB */
+        p += ret;
+    }
+
+    /* Add TD OBU size if needed */
+    if (add_td && !has_td)
+        total_size += 3 + 2;  /* start code + minimal TD OBU */
+
+    /* Allocate output buffer */
+    out = dst = av_malloc(total_size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!out)
+        return AVERROR(ENOMEM);
+
+    /* Add TD OBU if needed */
+    if (add_td && !has_td) {
+        AV_WB24(dst, 0x000001);
+        dst[3] = (AV1_OBU_TEMPORAL_DELIMITER << 3) | 0x02;  /* type + has_size_flag */
+        dst[4] = 0;  /* obu_size = 0 */
+        dst += 5;
+    }
+
+    /* Second pass: write output with start codes */
+    p = buf;
+    while (p < end) {
+        ret = parse_obu_header(p, end - p, &obu_size, &start_pos, &obu_type,
+                              &temporal_id, &spatial_id);
+        if (ret < 0) {
+            av_freep(&out);
+            return ret;
+        }
+
+        AV_WB24(dst, 0x000001);
+        dst += 3;
+        dst += av1_write_with_epb(dst, p, ret);
+        p += ret;
+    }
+
+    memset(dst, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+
+    *out_buf  = out;
+    *out_size = dst - out;
+    return 0;
+}
+
+int ff_av1_is_startcode_format(const uint8_t *buf, int size)
+{
+    if (size >= 4 && AV_RB24(buf) == 0x000001) {
+        /* MPEG-TS format has valid OBU header after start code (bit 7 = 0) */
+        return !(buf[3] & 0x80);
+    }
+    return 0;
 }
