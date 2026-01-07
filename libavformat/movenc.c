@@ -7204,7 +7204,7 @@ static int mov_write_single_packet(AVFormatContext *s, AVPacket *pkt)
             newextra = av_malloc(side_size + AV_INPUT_BUFFER_PADDING_SIZE);
             if (!newextra)
                 return AVERROR(ENOMEM);
-			memcpy(newextra, side, side_size);
+            memcpy(newextra, side, side_size);
             memset((uint8_t*)newextra + side_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
             av_free(trk->extradata[trk->last_stsd_index]);
             trk->extradata[trk->last_stsd_index] = newextra;
@@ -8802,10 +8802,6 @@ static int mov_check_bitstream(AVFormatContext *s, AVStream *st,
             ret = ff_stream_add_bitstream_filter(st, "aac_adtstoasc", NULL);
     } else if (st->codecpar->codec_id == AV_CODEC_ID_VP9) {
         ret = ff_stream_add_bitstream_filter(st, "vp9_superframe", NULL);
-    } else if (st->codecpar->codec_id == AV_CODEC_ID_AV1) {
-	        /* Convert MPEG-TS start code format to Section 5 if needed */
-        if (ff_av1_is_startcode_format(pkt->data, pkt->size))
-	            ret = ff_stream_add_bitstream_filter(st, "av1_tstosection5", NULL);
     }
 
     return ret;
