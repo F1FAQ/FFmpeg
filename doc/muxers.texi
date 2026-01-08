@@ -3191,36 +3191,6 @@ ffmpeg -i file.mpg -c copy \
      out.ts
 @end example
 
-@subsection AV1 Support
-
-The MPEG-TS muxer supports AV1 video streams according to the AOM
-"Carriage of AV1 in MPEG-2 TS" specification.
-
-AV1 streams are identified by stream type 0x06 (private data) and include:
-@itemize
-@item Registration descriptor with format identifier @samp{AV01}
-@item AV1 video descriptor (descriptor tag 0x80) containing sequence parameters
-@end itemize
-
-The muxer automatically converts AV1 from Section 5 (low overhead) format to
-the start code format required by MPEG-TS, where each OBU is prefixed with
-a 0x000001 start code.
-
-Temporal Delimiter OBUs are inserted at the beginning of each Temporal Unit
-to mark the access unit boundaries.
-
-@subsubsection Example
-
-Mux an AV1 video file to MPEG-TS:
-@example
-ffmpeg -i input.mp4 -c:v copy -f mpegts output.ts
-@end example
-
-Encode and mux AV1 to MPEG-TS:
-@example
-ffmpeg -i input.mp4 -c:v libaom-av1 -crf 30 -f mpegts output.ts
-@end example
-
 @section mxf, mxf_d10, mxf_opatom
 
 MXF muxer.
@@ -4009,4 +3979,3 @@ The optional private key file path for DTLS.
 @end table
 
 @c man end MUXERS
-@c man end DEMUXERS
