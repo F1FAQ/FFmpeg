@@ -273,6 +273,7 @@ static av_cold int libdav1d_init(AVCodecContext *c)
     sd = ff_get_coded_side_data(c, AV_PKT_DATA_DOVI_CONF);
     if (sd && sd->size >= sizeof(dav1d->dovi.cfg))
         dav1d->dovi.cfg = *(AVDOVIDecoderConfigurationRecord *) sd->data;
+
     return 0;
 }
 
@@ -296,6 +297,49 @@ static void libdav1d_user_data_free(const uint8_t *data, void *opaque) {
     av_packet_free(&pkt);
 }
 
+/**
+ * Convert start code format to Section 5 format for libdav1d.
+ * This is needed when receiving AV1 data from MPEG-TS demuxer.
+ */
+static int libdav1d_convert_startcode(AVCodecContext *c, AVPacket *pkt)
+{
+    AV1Packet av1_pkt = { 0 };
+    uint8_t *new_data;
+    size_t new_size = 0;
+    int ret, i;
+
+    ret = ff_av1_packet_split(&av1_pkt, pkt->data, pkt->size, c);
+    if (ret < 0)
+        return ret;
+
+    /* Calculate output size */
+    for (i = 0; i < av1_pkt.nb_obus; i++)
+        new_size += av1_pkt.obus[i].escaped_size;
+
+    if (new_size == 0) {
+        ff_av1_packet_uninit(&av1_pkt);
+        av_shrink_packet(pkt, 0);
+        return 0;
+    }
+
+    /* Allocate new buffer */
+    ret = av_new_packet(pkt, new_size);
+    if (ret < 0) {
+        ff_av1_packet_uninit(&av1_pkt);
+        return ret;
+    }
+
+    /* Copy OBUs without start codes */
+    new_data = pkt->data;
+    for (i = 0; i < av1_pkt.nb_obus; i++) {
+        memcpy(new_data, av1_pkt.obus[i].escaped_data, av1_pkt.obus[i].escaped_size);
+        new_data += av1_pkt.obus[i].escaped_size;
+    }
+
+    ff_av1_packet_uninit(&av1_pkt);
+    return 0;
+}
+
 static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
 {
     Libdav1dContext *dav1d = c->priv_data;
@@ -315,23 +359,51 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
         }
 
         if (pkt->size) {
-            res = dav1d_data_wrap(data, pkt->data, pkt->size,
-                                  libdav1d_data_free, pkt->buf);
-            if (res < 0) {
+            /* Convert MPEG-TS start code format to Section 5 if needed */
+            if (av1_is_startcode_format(pkt->data, pkt->size)) {
+                AVPacket *new_pkt = av_packet_alloc();
+                if (!new_pkt) {
+                    av_packet_free(&pkt);
+                    return AVERROR(ENOMEM);
+                }
+
+                res = av_packet_ref(new_pkt, pkt);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    av_packet_free(&new_pkt);
+                    return res;
+                }
                 av_packet_free(&pkt);
-                return res;
+                pkt = new_pkt;
+
+                res = libdav1d_convert_startcode(c, pkt);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    return res;
+                }
             }
 
-            pkt->buf = NULL;
+            if (pkt->size) {
+                res = dav1d_data_wrap(data, pkt->data, pkt->size,
+                                      libdav1d_data_free, pkt->buf);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    return res;
+                }
 
-            res = dav1d_data_wrap_user_data(data, (const uint8_t *)pkt,
-                                            libdav1d_user_data_free, pkt);
-            if (res < 0) {
+                pkt->buf = NULL;
+
+                res = dav1d_data_wrap_user_data(data, (const uint8_t *)pkt,
+                                                libdav1d_user_data_free, pkt);
+                if (res < 0) {
+                    av_packet_free(&pkt);
+                    dav1d_data_unref(data);
+                    return res;
+                }
+                pkt = NULL;
+            } else {
                 av_packet_free(&pkt);
-                dav1d_data_unref(data);
-                return res;
             }
-            pkt = NULL;
         } else {
             av_packet_free(&pkt);
             if (res >= 0)
@@ -339,13 +411,15 @@ static int libdav1d_receive_frame_internal(AVCodecContext *c, Dav1dPicture *p)
         }
     }
 
-    res = dav1d_send_data(dav1d->c, data);
-    if (res < 0) {
-        if (res == AVERROR(EINVAL))
-            res = AVERROR_INVALIDDATA;
-        if (res != AVERROR(EAGAIN)) {
-            dav1d_data_unref(data);
-            return res;
+    if (data->sz) {
+        res = dav1d_send_data(dav1d->c, data);
+        if (res < 0) {
+            if (res == AVERROR(EINVAL))
+                res = AVERROR_INVALIDDATA;
+            if (res != AVERROR(EAGAIN)) {
+                dav1d_data_unref(data);
+                return res;
+            }
         }
     }
 

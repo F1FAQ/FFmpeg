@@ -18,12 +18,14 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixfmt.h"
 
 #include "cbs.h"
 #include "cbs_internal.h"
 #include "cbs_av1.h"
+#include "av1_parse.h"
 #include "defs.h"
 #include "libavutil/refstruct.h"
 
@@ -699,11 +701,10 @@ static int cbs_av1_split_fragment(CodedBitstreamContext *ctx,
                                   int header)
 {
 #if CBS_READ
-    GetBitContext gbc;
+    AV1Packet pkt = { 0 };
     uint8_t *data;
     size_t size;
-    uint64_t obu_length;
-    int pos, err, trace;
+    int err, trace;
 
     // Don't include this parsing in trace output.
     trace = ctx->trace_enable;
@@ -726,8 +727,7 @@ static int cbs_av1_split_fragment(CodedBitstreamContext *ctx,
 
         if (config_record_version != 1) {
             av_log(ctx->log_ctx, AV_LOG_ERROR,
-                   "Unknown version %d of AV1CodecConfigurationRecord "
-                   "found!\n",
+                   "Unsupported AV1CodecConfigurationRecord version %d\n",
                    config_record_version);
             err = AVERROR_INVALIDDATA;
             goto fail;
@@ -752,54 +752,41 @@ static int cbs_av1_split_fragment(CodedBitstreamContext *ctx,
         size -= 4;
     }
 
-    while (size > 0) {
-        AV1RawOBUHeader obu_header;
-        uint64_t obu_size;
+    // Use unified ff_av1_packet_split which automatically detects format
+    err = ff_av1_packet_split(&pkt, data, size, ctx->log_ctx);
+    if (err < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(err, errbuf, sizeof(errbuf));
+        av_log(ctx->log_ctx, AV_LOG_ERROR, "Failed to split AV1 fragment: "
+               "size=%zu, first_byte=0x%02x, is_startcode=%d, error=%d (%s)\n",
+               size, size > 0 ? data[0] : 0,
+               size >= 3 && AV_RB24(data) == 0x000001, err, errbuf);
+        goto fail;
+    }
 
-        init_get_bits(&gbc, data, 8 * size);
+    if (pkt.nb_obus == 0) {
+        av_log(ctx->log_ctx, AV_LOG_VERBOSE, "No OBUs found in fragment: "
+               "size=%zu, first_byte=0x%02x\n",
+               size, size > 0 ? data[0] : 0);
+        err = 0;
+        goto success;
+    }
 
-        err = cbs_av1_read_obu_header(ctx, &gbc, &obu_header);
+    for (int i = 0; i < pkt.nb_obus; i++) {
+        AVBufferRef *data_ref = pkt.obus[i].escaped_data == pkt.obus[i].raw_data ?
+                                frag->data_ref : pkt.buf.ref;
+        err = CBS_FUNC(append_unit_data)(frag, pkt.obus[i].type,
+                                         (uint8_t *)pkt.obus[i].escaped_data,
+                                         pkt.obus[i].escaped_size,
+                                         data_ref);
         if (err < 0)
             goto fail;
-
-        if (obu_header.obu_has_size_field) {
-            if (get_bits_left(&gbc) < 8) {
-                av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid OBU: fragment "
-                       "too short (%zu bytes).\n", size);
-                err = AVERROR_INVALIDDATA;
-                goto fail;
-            }
-            err = cbs_av1_read_leb128(ctx, &gbc, "obu_size", &obu_size);
-            if (err < 0)
-                goto fail;
-        } else
-            obu_size = size - 1 - obu_header.obu_extension_flag;
-
-        pos = get_bits_count(&gbc);
-        av_assert0(pos % 8 == 0 && pos / 8 <= size);
-
-        obu_length = pos / 8 + obu_size;
-
-        if (size < obu_length) {
-            av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid OBU length: "
-                   "%"PRIu64", but only %zu bytes remaining in fragment.\n",
-                   obu_length, size);
-            err = AVERROR_INVALIDDATA;
-            goto fail;
-        }
-
-        err = CBS_FUNC(append_unit_data)(frag, obu_header.obu_type,
-                                      data, obu_length, frag->data_ref);
-        if (err < 0)
-            goto fail;
-
-        data += obu_length;
-        size -= obu_length;
     }
 
 success:
     err = 0;
 fail:
+    ff_av1_packet_uninit(&pkt);
     ctx->trace_enable = trace;
     return err;
 #else

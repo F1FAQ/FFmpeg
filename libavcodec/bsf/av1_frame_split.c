@@ -21,13 +21,11 @@
 /**
  * @file
  * This bitstream filter splits AV1 Temporal Units into packets containing
- * just one frame, plus any leading and trailing OBUs that may be present at
- * the beginning or end, respectively.
+ * just one TU (one shown frame), plus any leading OBUs.
  *
- * Temporal Units already containing only one frame will be passed through
- * unchanged. When splitting can't be performed, the Temporal Unit will be
- * passed through containing only the remaining OBUs starting from the first
- * one after the last successfully split frame.
+ * Temporal Units already containing only one shown frame will be passed through
+ * unchanged. When splitting is performed, the timestamps are distributed
+ * assuming constant duration per TU.
  */
 
 #include "libavutil/avassert.h"
@@ -43,9 +41,15 @@ typedef struct AV1FSplitContext {
     CodedBitstreamFragment temporal_unit;
 
     int nb_frames;
+    int nb_shown_frames;
     int cur_frame;
+    int cur_shown_frame;
     int cur_frame_idx;
     int last_frame_idx;
+
+    int64_t cur_dts;
+    int64_t cur_pts;
+    int64_t delta_dts;
 } AV1FSplitContext;
 
 static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
@@ -56,7 +60,7 @@ static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
     int split = !!s->buffer_pkt->data;
 
     if (!s->buffer_pkt->data) {
-        int nb_frames = 0;
+        int nb_shown_frames = 0;
 
         ret = ff_bsf_get_packet_ref(ctx, s->buffer_pkt);
         if (ret < 0)
@@ -64,25 +68,39 @@ static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
 
         ret = ff_cbs_read_packet(s->cbc, td, s->buffer_pkt);
         if (ret < 0) {
-            av_log(ctx, AV_LOG_WARNING, "Failed to parse temporal unit.\n");
+            av_log(ctx, AV_LOG_WARNING, "Failed to parse temporal unit.");
             goto passthrough;
         }
 
         for (i = 0; i < td->nb_units; i++) {
             CodedBitstreamUnit *unit = &td->units[i];
 
-            if (unit->type == AV1_OBU_FRAME ||
-                unit->type == AV1_OBU_FRAME_HEADER)
-                nb_frames++;
-            else if (unit->type == AV1_OBU_TILE_LIST) {
-                av_log(ctx, AV_LOG_VERBOSE, "Large scale tiles are unsupported.\n");
+            if (unit->type == AV1_OBU_FRAME) {
+                AV1RawOBU *obu = unit->content;
+                if (obu->obu.frame.header.show_frame || obu->obu.frame.header.show_existing_frame)
+                    nb_shown_frames++;
+            } else if (unit->type == AV1_OBU_FRAME_HEADER) {
+                AV1RawOBU *obu = unit->content;
+                if (obu->obu.frame_header.show_frame || obu->obu.frame_header.show_existing_frame)
+                    nb_shown_frames++;
+            } else if (unit->type == AV1_OBU_TILE_LIST) {
+                av_log(ctx, AV_LOG_VERBOSE, "Large scale tiles are unsupported.");
                 goto passthrough;
             }
         }
-        if (nb_frames > 1) {
+        if (nb_shown_frames > 1) {
             s->cur_frame = 0;
+            s->cur_shown_frame = 0;
             s->cur_frame_idx = s->last_frame_idx = 0;
-            s->nb_frames = nb_frames;
+            s->nb_frames = td->nb_units;
+            s->nb_shown_frames = nb_shown_frames;
+            s->cur_dts = s->buffer_pkt->dts;
+            s->cur_pts = s->buffer_pkt->pts;
+            s->delta_dts = 0;
+            if (s->buffer_pkt->duration > 0)
+                s->delta_dts = s->buffer_pkt->duration / nb_shown_frames;
+            if (s->delta_dts <= 0)
+                s->delta_dts = 1;
             split = 1;
         }
     }
@@ -90,6 +108,7 @@ static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
     if (split) {
         AV1RawFrameHeader *frame = NULL;
         int cur_frame_type = -1, size = 0;
+        int frame_is_shown = 0;
 
         for (i = s->cur_frame_idx; i < td->nb_units; i++) {
             CodedBitstreamUnit *unit = &td->units[i];
@@ -100,40 +119,44 @@ static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
 
                 if (frame) {
                     av_log(ctx, AV_LOG_WARNING, "Frame OBU found when Tile data for a "
-                                                "previous frame was expected.\n");
+                                                "previous frame was expected.");
                     goto passthrough;
                 }
 
                 frame = &obu->obu.frame.header;
                 cur_frame_type = obu->header.obu_type;
+                frame_is_shown = frame->show_frame || frame->show_existing_frame;
                 s->last_frame_idx = s->cur_frame_idx;
                 s->cur_frame_idx  = i + 1;
                 s->cur_frame++;
-
-                // split here unless it's the last frame, in which case
-                // include every trailing OBU
-                if (s->cur_frame < s->nb_frames)
-                    break;
+                if (frame_is_shown) {
+                    s->cur_shown_frame++;
+                    if (s->cur_shown_frame < s->nb_shown_frames)
+                        break;
+                }
             } else if (unit->type == AV1_OBU_FRAME_HEADER) {
                 AV1RawOBU *obu = unit->content;
 
                 if (frame) {
                     av_log(ctx, AV_LOG_WARNING, "Frame Header OBU found when Tile data for a "
-                                                "previous frame was expected.\n");
+                                                "previous frame was expected.");
                     goto passthrough;
                 }
 
                 frame = &obu->obu.frame_header;
                 cur_frame_type = obu->header.obu_type;
+                frame_is_shown = frame->show_frame || frame->show_existing_frame;
                 s->last_frame_idx = s->cur_frame_idx;
                 s->cur_frame++;
 
-                // split here if show_existing_frame unless it's the last
-                // frame, in which case include every trailing OBU
-                if (frame->show_existing_frame &&
-                    s->cur_frame < s->nb_frames) {
-                    s->cur_frame_idx = i + 1;
-                    break;
+                if (frame_is_shown) {
+                    if (frame->show_existing_frame) {
+                        s->cur_shown_frame++;
+                        if (s->cur_shown_frame < s->nb_shown_frames) {
+                             s->cur_frame_idx = i + 1;
+                             break;
+                        }
+                    }
                 }
             } else if (unit->type == AV1_OBU_TILE_GROUP) {
                 AV1RawOBU *obu = unit->content;
@@ -141,20 +164,22 @@ static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
 
                 if (!frame || cur_frame_type != AV1_OBU_FRAME_HEADER) {
                     av_log(ctx, AV_LOG_WARNING, "Unexpected Tile Group OBU found before a "
-                                                "Frame Header.\n");
+                                                "Frame Header.");
                     goto passthrough;
                 }
 
-                if ((group->tg_end == (frame->tile_cols * frame->tile_rows) - 1) &&
-                    // include every trailing OBU with the last frame
-                    s->cur_frame < s->nb_frames) {
-                    s->cur_frame_idx = i + 1;
-                    break;
+                if ((group->tg_end == (frame->tile_cols * frame->tile_rows) - 1)) {
+                    if (frame->show_frame) {
+                        s->cur_shown_frame++;
+                        if (s->cur_shown_frame < s->nb_shown_frames) {
+                             s->cur_frame_idx = i + 1;
+                             break;
+                        }
+                    }
                 }
             }
         }
-        av_assert0(frame && s->cur_frame <= s->nb_frames);
-
+        
         ret = av_packet_ref(out, s->buffer_pkt);
         if (ret < 0)
             goto fail;
@@ -162,15 +187,21 @@ static int av1_frame_split_filter(AVBSFContext *ctx, AVPacket *out)
         out->data = (uint8_t *)td->units[s->last_frame_idx].data;
         out->size = size;
 
-        // skip the frame in the buffer packet if it's split successfully, so it's not present
-        // if the packet is passed through in case of failure when splitting another frame.
         s->buffer_pkt->data += size;
         s->buffer_pkt->size -= size;
 
-        if (!frame->show_existing_frame && !frame->show_frame)
-            out->pts = AV_NOPTS_VALUE;
+        if (out->dts != AV_NOPTS_VALUE) {
+            out->dts = s->cur_dts;
+            s->cur_dts += s->delta_dts;
+        }
+        out->duration = s->delta_dts;
 
-        if (s->cur_frame == s->nb_frames) {
+        if (out->pts != AV_NOPTS_VALUE) {
+             out->pts = s->cur_pts;
+             s->cur_pts += s->delta_dts;
+        }
+
+        if (s->cur_shown_frame == s->nb_shown_frames) {
             av_packet_unref(s->buffer_pkt);
             ff_cbs_fragment_reset(td);
         }
@@ -222,7 +253,7 @@ static int av1_frame_split_init(AVBSFContext *ctx)
 
     ret = ff_cbs_read_extradata(s->cbc, td, ctx->par_in);
     if (ret < 0)
-        av_log(ctx, AV_LOG_WARNING, "Failed to parse extradata.\n");
+        av_log(ctx, AV_LOG_WARNING, "Failed to parse extradata.");
 
     ff_cbs_fragment_reset(td);
 

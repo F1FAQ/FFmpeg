@@ -21,6 +21,7 @@
 #include "internal.h"
 #include "mux.h"
 #include "libavutil/intreadwrite.h"
+#include "av1.h"
 
 typedef struct IVFEncContext {
     unsigned frame_cnt;
@@ -42,15 +43,24 @@ static int ivf_init(AVFormatContext *s)
         int ret = ff_stream_add_bitstream_filter(s->streams[0], "vp9_superframe", NULL);
         if (ret < 0)
             return ret;
-    } else if (par->codec_id == AV_CODEC_ID_AV1) {
-        int ret = ff_stream_add_bitstream_filter(s->streams[0], "av1_metadata", "td=insert");
-        if (ret < 0)
-            return ret;
     }
-
+    /* AV1 BSFs (av1_tstosection5 and av1_metadata) are added in check_bitstream
+     * to properly handle MPEG-TS start code format input */
     return 0;
 }
 
+static int ivf_check_bitstream(AVFormatContext *s, AVStream *st,
+                               const AVPacket *pkt)
+{
+    if (st->codecpar->codec_id == AV_CODEC_ID_AV1) {
+        /* Convert from MPEG-TS start code format to Section 5 if needed */
+        if (ff_av1_is_startcode_format(pkt->data, pkt->size))
+            return ff_stream_add_bitstream_filter(st, "av1_tstosection5", NULL);
+        /* Add av1_metadata to insert Temporal Delimiter OBUs */
+        return ff_stream_add_bitstream_filter(st, "av1_metadata", "td=insert");
+    }
+    return 1;
+}
 static int ivf_write_header(AVFormatContext *s)
 {
     AVCodecParameters *par = s->streams[0]->codecpar;
@@ -125,4 +135,5 @@ const FFOutputFormat ff_ivf_muxer = {
     .write_header = ivf_write_header,
     .write_packet = ivf_write_packet,
     .write_trailer = ivf_write_trailer,
+    .check_bitstream = ivf_check_bitstream,
 };
