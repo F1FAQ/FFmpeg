@@ -237,7 +237,7 @@ static int config_enc_params(EbSvtAv1EncConfiguration *param,
     } else if (svt_enc->qp > 0) {
         param->qp                   = svt_enc->qp;
         param->rate_control_mode    = 0;
-        param->enable_adaptive_quantization = 0;
+        //modif cma param->enable_adaptive_quantization = 0;
     }
 
     desc = av_pix_fmt_desc_get(avctx->pix_fmt);
