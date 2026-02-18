@@ -2136,6 +2136,10 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
             if (st->codecpar->codec_tag == MKTAG('B', 'S', 'S', 'D'))
                 sti->request_probe = 50;
         }
+        if (st->codecpar->codec_tag == MKTAG('A', 'V', '0', '1'))
+            av_log(fc, AV_LOG_WARNING, "AV1 via registration descriptor detected. "
+                   "The \"Carriage of AV1 in MPEG-2 TS\" specification is currently "
+                   "a working draft and subject to change. Interoperability issues may occur.\n");
         break;
     case STREAM_IDENTIFIER_DESCRIPTOR:
         sti->stream_identifier = 1 + get8(pp, desc_end);
