@@ -92,6 +92,38 @@ Deletes Padding OBUs.
 
 @end table
 
+@section av1_tstosection5
+	
+	Convert AV1 bitstream from MPEG-TS start code format to Section 5 (low overhead)
+	format.
+	
+	This filter is used to convert AV1 streams from the format used in MPEG-TS
+	containers (with 0x000001 start codes prefixing each OBU) to the standard
+	Section 5 format used by most other containers and decoders.
+	
+	If the input is already in Section 5 format, this filter acts as a no-op and
+	passes the data through unchanged.
+	
+	This filter is automatically inserted when remuxing from MPEG-TS to containers
+	that require Section 5 format, such as MP4, MKV, FLV, IVF, and raw OBU files.
+	
+	@subsection Examples
+	
+	@itemize
+	@item
+	Remux an AV1 stream from MPEG-TS into MP4:
+	@example
+	ffmpeg -i input.ts -c:v copy output.mp4
+	@end example
+	The filter is automatically inserted when needed.
+	
+	@item
+	Explicitly apply the filter:
+	@example
+	ffmpeg -i input.ts -bsf:v av1_tstosection5 -c:v copy output.ivf
+	@end example
+	@end itemize
+	
 @section chomp
 
 Remove zero padding at the end of a packet.
