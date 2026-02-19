@@ -30,8 +30,9 @@
 #include "libavutil/cpu.h"
 #include "libavutil/hdr_dynamic_metadata.h"
 #include "libavutil/imgutils.h"
-
+#include "libavutil/mem.h"
 #include "avcodec.h"
+#include "av1_parse.h"
 #include "bytestream.h"
 #include "codec_internal.h"
 #include "decode.h"
@@ -198,15 +199,79 @@ static int decode_metadata(AVFrame *frame, const struct aom_image *img)
     return 0;
 }
 
+
+	/**
+	 * Convert start code format to Section 5 format for libaom.
+	 * This is needed when receiving AV1 data from MPEG-TS demuxer.
+	 */
+	static int libaom_convert_startcode(AVCodecContext *avctx,
+	                                    const uint8_t *src, int src_size,
+	                                    uint8_t **dst, int *dst_size)
+	{
+	    AV1Packet pkt = { 0 };
+	    uint8_t *out;
+	    size_t total_size = 0;
+	    int ret, i;
+	
+	    ret = ff_av1_packet_split(&pkt, src, src_size, avctx);
+	    if (ret < 0)
+	        return ret;
+	
+	    /* Calculate output size */
+	    for (i = 0; i < pkt.nb_obus; i++)
+	        total_size += pkt.obus[i].escaped_size;
+	
+	    if (total_size == 0) {
+	        ff_av1_packet_uninit(&pkt);
+	        *dst = NULL;
+	        *dst_size = 0;
+	        return 0;
+	    }
+	
+	    /* Allocate output buffer */
+	    out = av_malloc(total_size + AV_INPUT_BUFFER_PADDING_SIZE);
+	    if (!out) {
+	        ff_av1_packet_uninit(&pkt);
+	        return AVERROR(ENOMEM);
+	    }
+	
+	    /* Copy OBUs without start codes */
+	    *dst_size = 0;
+	    for (i = 0; i < pkt.nb_obus; i++) {
+	        memcpy(out + *dst_size, pkt.obus[i].escaped_data, pkt.obus[i].escaped_size);
+	        *dst_size += pkt.obus[i].escaped_size;
+	    }
+	    memset(out + *dst_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+	
+	    ff_av1_packet_uninit(&pkt);
+	    *dst = out;
+	    return 0;
+	}
+
 static int aom_decode(AVCodecContext *avctx, AVFrame *picture,
                       int *got_frame, AVPacket *avpkt)
 {
     AV1DecodeContext *ctx = avctx->priv_data;
     const void *iter      = NULL;
     struct aom_image *img;
+    const uint8_t *data = avpkt->data;
+	int size = avpkt->size;
+	uint8_t *converted_data = NULL;
     int ret;
 
-    if (aom_codec_decode(&ctx->decoder, avpkt->data, avpkt->size, NULL) !=
+    /* Convert MPEG-TS start code format to Section 5 if needed */
+	    if (av1_is_startcode_format(avpkt->data, avpkt->size)) {
+	        int converted_size;
+	        ret = libaom_convert_startcode(avctx, avpkt->data, avpkt->size,
+	                                       &converted_data, &converted_size);
+	        if (ret < 0)
+	            return ret;
+	
+	        data = converted_data;
+	        size = converted_size;
+	    }
+	
+	    if (size && aom_codec_decode(&ctx->decoder, data, size, NULL) !=
         AOM_CODEC_OK) {
         const char *error  = aom_codec_error(&ctx->decoder);
         const char *detail = aom_codec_error_detail(&ctx->decoder);
@@ -215,9 +280,12 @@ static int aom_decode(AVCodecContext *avctx, AVFrame *picture,
         if (detail)
             av_log(avctx, AV_LOG_ERROR, "  Additional information: %s\n",
                    detail);
+        av_freep(&converted_data);
         return AVERROR_INVALIDDATA;
     }
 
+    av_freep(&converted_data);
+    
     if ((img = aom_codec_get_frame(&ctx->decoder, &iter))) {
         if (img->d_w > img->w || img->d_h > img->h) {
             av_log(avctx, AV_LOG_ERROR, "Display dimensions %dx%d exceed storage %dx%d\n",
