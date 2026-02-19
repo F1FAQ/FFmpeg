@@ -1008,9 +1008,6 @@ are split across multiple packets. Range is 1 to INT_MAX/2. Default is 204800 by
 The MPEG-TS demuxer supports AV1 video streams according to the AOM
 "Carriage of AV1 in MPEG-2 TS" specification.
 
-When remuxing to other containers (MP4, MKV, FLV, IVF, etc.), the
-@code{av1_tstosection5} bitstream filter is automatically inserted.
-
 @section mpjpeg
 
 MJPEG encapsulated in multi-part MIME demuxer.
