@@ -2703,14 +2703,13 @@ static void pat_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
             break;
         pmt_pid &= 0x1fff;
 
-        if (pmt_pid == ts->current_pid)
-            break;
-
         av_log(ts->stream, AV_LOG_TRACE, "sid=0x%x pid=0x%x\n", sid, pmt_pid);
 
         if (sid == 0x0000) {
             /* NIT info */
         } else {
+            if (pmt_pid == ts->current_pid)
+	            break;
             MpegTSFilter *fil = ts->pids[pmt_pid];
             struct Program *prg;
             program = av_new_program(ts->stream, sid);
