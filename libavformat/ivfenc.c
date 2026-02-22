@@ -46,6 +46,7 @@ static int ivf_init(AVFormatContext *s)
     }
     /* AV1 BSFs (av1_tstosection5 and av1_metadata) are added in check_bitstream
      * to properly handle MPEG-TS start code format input */
+    
     return 0;
 }
 
@@ -61,6 +62,7 @@ static int ivf_check_bitstream(AVFormatContext *s, AVStream *st,
     }
     return 1;
 }
+
 static int ivf_write_header(AVFormatContext *s)
 {
     AVCodecParameters *par = s->streams[0]->codecpar;
