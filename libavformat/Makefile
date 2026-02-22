@@ -743,6 +743,7 @@ OBJS-$(CONFIG_LIBZMQ_PROTOCOL)           += libzmq.o
 
 # Objects duplicated from other libraries for shared builds
 SHLIBOBJS                                += log2_tab.o to_upper4.o
+SHLIBOBJS                                += av1_parse.o startcode.o
 SHLIBOBJS-$(CONFIG_ISO_MEDIA)            += mpegaudiotabs.o
 SHLIBOBJS-$(CONFIG_ISO_WRITER)           += golomb_tab.o
 SHLIBOBJS-$(CONFIG_FLV_MUXER)            += mpeg4audio_sample_rates.o
