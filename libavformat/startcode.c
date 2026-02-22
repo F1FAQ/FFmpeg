@@ -1,5 +1,5 @@
 /*
- * Start code handling - libavformat wrapper
+ * Startcode detection for muxers
  *
  * This file is part of FFmpeg.
  *
