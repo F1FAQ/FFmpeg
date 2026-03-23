@@ -187,6 +187,7 @@ static const struct {
     #if CONFIG_HEVC_DECODER
         { "hevc_add_res", checkasm_check_hevc_add_res },
         { "hevc_deblock", checkasm_check_hevc_deblock },
+        { "hevc_dequant", checkasm_check_hevc_dequant },
         { "hevc_idct", checkasm_check_hevc_idct },
         { "hevc_pel", checkasm_check_hevc_pel },
         { "hevc_sao", checkasm_check_hevc_sao },
@@ -194,8 +195,11 @@ static const struct {
     #if CONFIG_HPELDSP
         { "hpeldsp", checkasm_check_hpeldsp },
     #endif
-    #if CONFIG_HUFFYUV_DECODER
+    #if CONFIG_HUFFYUVDSP
         { "huffyuvdsp", checkasm_check_huffyuvdsp },
+    #endif
+    #if CONFIG_HUFFYUVENCDSP
+        { "huffyuvencdsp", checkasm_check_huffyuvencdsp },
     #endif
     #if CONFIG_IDCTDSP
         { "idctdsp", checkasm_check_idctdsp },
@@ -218,6 +222,9 @@ static const struct {
     #if CONFIG_ME_CMP
         { "motion", checkasm_check_motion },
     #endif
+    #if CONFIG_MPEG4_DECODER
+        { "mpeg4videodsp", checkasm_check_mpeg4videodsp },
+    #endif
     #if CONFIG_MPEGVIDEO
         { "mpegvideo_unquantize", checkasm_check_mpegvideo_unquantize },
     #endif
@@ -229,6 +236,9 @@ static const struct {
     #endif
     #if CONFIG_PIXBLOCKDSP
         { "pixblockdsp", checkasm_check_pixblockdsp },
+    #endif
+    #if CONFIG_PNG_DECODER
+        { "png", checkasm_check_png },
     #endif
     #if CONFIG_QPELDSP
         { "qpeldsp", checkasm_check_qpeldsp },
@@ -348,6 +358,9 @@ static const struct {
         { "fixed_dsp", checkasm_check_fixed_dsp },
         { "float_dsp", checkasm_check_float_dsp },
         { "lls",       checkasm_check_lls },
+#if CONFIG_PIXELUTILS
+        { "pixelutils",checkasm_check_pixelutils },
+#endif
         { "av_tx",     checkasm_check_av_tx },
 #endif
     { NULL }
@@ -370,7 +383,10 @@ static const struct {
     { "SVE",      "sve",      AV_CPU_FLAG_SVE },
     { "SVE2",     "sve2",     AV_CPU_FLAG_SVE2 },
     { "SME",      "sme",      AV_CPU_FLAG_SME },
+    { "SME-I16I64", "sme_i16i64", AV_CPU_FLAG_SME_I16I64 },
     { "CRC",      "crc",      AV_CPU_FLAG_ARM_CRC },
+    { "SME2",     "sme2",      AV_CPU_FLAG_SME2 },
+    { "PMULL",    "pmull_eor3", AV_CPU_FLAG_PMULL|AV_CPU_FLAG_EOR3 },
 #elif ARCH_ARM
     { "ARMV5TE",  "armv5te",  AV_CPU_FLAG_ARMV5TE },
     { "ARMV6",    "armv6",    AV_CPU_FLAG_ARMV6 },

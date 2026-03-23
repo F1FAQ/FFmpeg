@@ -127,9 +127,12 @@ typedef struct ColorSpaceContext {
     enum AVColorPrimaries in_prm, out_prm, user_prm, user_iprm;
     enum AVPixelFormat in_format, user_format;
     int fast_mode;
-    enum DitherMode dither;
-    enum WhitepointAdaptation wp_adapt;
-    enum ClipGamutMode clip_gamut;
+    /* enum DitherMode */
+    int dither;
+    /* enum WhitepointAdaptation */
+    int wp_adapt;
+    /* enum ClipGamutMode */
+    int clip_gamut;
 
     int16_t *rgb[3];
     ptrdiff_t rgb_stride;
@@ -873,7 +876,7 @@ static int query_formats(const AVFilterContext *ctx,
             return res;
     }
 
-    formats = ff_make_format_list(pix_fmts);
+    formats = ff_make_pixel_format_list(pix_fmts);
     if (!formats)
         return AVERROR(ENOMEM);
     if (s->user_format == AV_PIX_FMT_NONE)

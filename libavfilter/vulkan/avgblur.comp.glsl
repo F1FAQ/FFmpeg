@@ -18,7 +18,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#version 460
 #pragma shader_stage(compute)
 
 #extension GL_EXT_shader_image_load_formatted : require
@@ -40,9 +39,8 @@ void main()
 {
     const ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
 
-#define IS_WITHIN(v1, v2) ((v1.x < v2.x) && (v1.y < v2.y))
     ivec2 size = imageSize(output_img[nonuniformEXT(gl_LocalInvocationID.z)]);
-    if (!IS_WITHIN(pos, size))
+    if (any(greaterThanEqual(pos, size)))
         return;
 
     if ((planes & (1 << gl_LocalInvocationID.z)) == 0) {

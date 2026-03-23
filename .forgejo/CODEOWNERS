@@ -57,6 +57,7 @@ libavcodec/.*png.* @Traneptora
 libavcodec/.*prores.* @lynne
 libavcodec/rangecoder.* @michaelni
 libavcodec/ratecontrol.* @michaelni
+libavcodec/rkmpp* @quink
 libavcodec/rv60.* @pross
 libavcodec/sgirle.* @pross
 libavcodec/.*siren.* @lynne
@@ -94,6 +95,7 @@ libavcodec/x86/vpx.* @rbultje
 
 # avfilter
 # =======
+libavfilter/af_loudnorm.* @kylophone
 libavfilter/af_whisper.* @vpalmisano
 libavfilter/.*_amf* @OvchinnikovDmitrii @ArazIusubov
 libavfilter/avfiltergraph.* @haasn
@@ -107,6 +109,7 @@ libavfilter/.*drawvg.* @ayosec
 libavfilter/vf_find_rect.* @michaelni
 libavfilter/vf_icc.* @haasn
 libavfilter/vf_libplacebo.* @haasn
+libavfilter/vf_libvmaf.* @kylophone
 libavfilter/vf_premultiply.* @haasn
 libavfilter/vf_scale.* @haasn
 libavfilter/vf_scale_vt.* @quink
@@ -137,6 +140,7 @@ libavformat/electronicarts.* @pross
 libavformat/.*exif.* @Traneptora
 libavformat/filmstrip.* @pross
 libavformat/frm.* @pross
+libavformat/hxvs.* @quink
 libavformat/iamf.* @jamrial
 libavformat/icecast.c @ePirat
 libavformat/ico.* @pross
@@ -151,6 +155,7 @@ libavformat/mlv.* @pross
 libavformat/mm.* @pross
 libavformat/msp.* @pross
 libavformat/mv.* @pross
+libavformat/ogg* @toots
 libavformat/pp_bnk.* @zane
 libavformat/rm.* @pross
 libavformat/sauce.* @pross
@@ -191,6 +196,7 @@ libavutil/aarch64/.* @lynne @mstorsjo
 libavutil/arm/.* @mstorsjo
 libavutil/ppc/.* @sean_mcg
 libavutil/riscv/.* @Courmisch
+libavutil/wasm/.* @quink
 libavutil/x86/.* @lynne
 
 # swresample
@@ -226,3 +232,11 @@ doc/.* @GyanD
 tests/checkasm/riscv/.* @Courmisch
 tests/ref/.*drawvg.* @ayosec
 tests/ref/fate/sub-mcc.* @programmerjake
+
+# Forgejo
+# =======
+.forgejo/CODEOWNERS @michaelni
+
+# /
+# =
+MAINTAINERS @michaelni
