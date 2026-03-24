@@ -7258,8 +7258,8 @@ static int mov_write_single_packet(AVFormatContext *s, AVPacket *pkt)
 	            newextra = av_malloc(side_size + AV_INPUT_BUFFER_PADDING_SIZE);            
             	if (!newextra)
                 	return AVERROR(ENOMEM);
-            	memcpy(newextra, side, side_size);
-	            memset((uint8_t*)newextra + side_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+            	memset((uint8_t*)newextra + side_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+	            memcpy(newextra, side, side_size);
             av_free(trk->extradata[trk->last_stsd_index]);
             trk->extradata[trk->last_stsd_index] = newextra;
             trk->extradata_size[trk->last_stsd_index] = side_size;
