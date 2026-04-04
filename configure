@@ -300,6 +300,7 @@ External library support:
                            native implementation exists [no]
   --enable-libvpx          enable VP8 and VP9 de/encoding via libvpx [no]
   --enable-libvvenc        enable H.266/VVC encoding via vvenc [no]
+  --enable-libvvdec        enable H.266/VVC decoding via vvenc [no]
   --enable-libwebp         enable WebP encoding via libwebp [no]
   --enable-libx264         enable H.264 encoding via x264 [no]
   --enable-libx265         enable HEVC encoding via x265 [no]
@@ -2104,6 +2105,7 @@ EXTERNAL_LIBRARY_LIST="
     libvorbis
     libvpx
     libvvenc
+    libvvdec
     libwebp
     libxevd
     libxevdb
@@ -3836,6 +3838,8 @@ libvpx_vp8_encoder_deps="libvpx"
 libvpx_vp9_decoder_deps="libvpx"
 libvpx_vp9_encoder_deps="libvpx"
 libvvenc_encoder_deps="libvvenc"
+libvvdec_decoder_deps="libvvdec"
+libvvdec_decoder_select="vvc_mp4toannexb_bsf"
 libwebp_encoder_deps="libwebp"
 libwebp_anim_encoder_deps="libwebp"
 libx262_encoder_deps="libx262"
@@ -7432,6 +7436,7 @@ enabled libvpx            && {
 }
 
 enabled libvvenc          && require_pkg_config libvvenc "libvvenc >= 1.6.1" "vvenc/vvenc.h" vvenc_get_version
+enabled libvvdec          && require_pkg_config libvvdec "libvvdec >= 1.6.0" "vvdec/vvdec.h" vvdec_get_version
 enabled libwebp           && {
     enabled libwebp_encoder      && require_pkg_config libwebp "libwebp >= 0.2.0" webp/encode.h WebPGetEncoderVersion
     enabled libwebp_anim_encoder && check_pkg_config libwebp_anim_encoder "libwebpmux >= 0.4.0" webp/mux.h WebPAnimEncoderOptionsInit; }
